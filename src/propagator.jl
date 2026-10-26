@@ -10,8 +10,12 @@ A batch is a complex array `X` of size `(2m+2, m+2, B)` and of type `array`
 an `FTField{n, m}` of OpenKolmogorovFlow: the signed wavenumber `k` along `y`
 down the rows, in FFT order, and `j ≥ 0` along `x` across the columns. Field by
 field, the results are those of `ForwardEquation(n, m, Re, kf)` with the same
-scheme and steps, to round-off. Fields produced by the propagator have zero
-inactive modes and zero mean.
+scheme and steps, to round-off. The propagator acts on the fields of
+OpenKolmogorovFlow alone: every batch it advances is first projected onto them,
+with zero inactive modes and zero mean and the column `j = 0` Hermitian, so that
+the flow map and its tangent vanish on the rest of the stored entries. Without
+the projection those entries would be carried unchanged, a neutral subspace of
+the tangent map that random perturbations fill.
 
 `n` is the largest active wavenumber and `2m+2` the number of grid points along
 each direction (`m = 3n/2` dealiases the products). The work arrays and the
@@ -79,6 +83,18 @@ function _forward(P::KolmogorovPropagator, B::Int)
     end
 end
 
+# the projection of a batch onto the fields of OKF, in place: zero inactive modes and mean, and the
+# Hermitian part of the column j = 0, k ↔ -k; the identity on fields of OKF
+function _project!(P::KolmogorovPropagator, X::AbstractArray)
+    m    = P.m
+    X  .*= P.implicit.mask
+    pos  = view(X, 2:(m + 1), 1, :)
+    neg  = view(X, (2m + 2):-1:(m + 3), 1, :)
+    pos .= 0.5 .* (pos .+ conj.(neg))
+    neg .= conj.(pos)
+    return X
+end
+
 # the flow of the equation coupled to its tangent, for batches of size B
 function _tangent(P::KolmogorovPropagator, B::Int)
     return get!(P.cache, (:tangent, B)) do
@@ -103,7 +119,7 @@ view.
 """
 function propagate!(P::KolmogorovPropagator, X::AbstractArray{ComplexF64, 3}, τ::Real)
     _, ϕ = _forward(P, size(X, 3))
-    ϕ(X, (0, τ))
+    ϕ(_project!(P, X), (0, τ))
     return X
 end
 
@@ -120,7 +136,7 @@ when several perturbations share a base.
 function tangent!(P::KolmogorovPropagator, X::AbstractArray{ComplexF64, 3},
                                            V::AbstractArray{ComplexF64, 3}, τ::Real)
     ϕ = _tangent(P, size(X, 3))
-    ϕ(Flows.couple(X, V), (0, τ))
+    ϕ(Flows.couple(_project!(P, X), _project!(P, V)), (0, τ))
     return V
 end
 

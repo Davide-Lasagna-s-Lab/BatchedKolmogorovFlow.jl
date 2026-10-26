@@ -101,6 +101,14 @@ end
     # ---- zero inactive modes and zero mean ----
     mask = KS._mask(n, m)
     @test all(X[:, :, 1][mask .== 0] .== 0)
+
+    # ---- entries outside the fields of OKF are projected out: inactive modes, mean, the j = 0 column not Hermitian ----
+    Random.seed!(3)
+    J  = randn(ComplexF64, 2m + 2, m + 2, 4) .* (1 .- mask)
+    J[2:(m + 1), 1, :] .+= randn(ComplexF64, m, 4)
+    J[(2m + 2):-1:(m + 3), 1, :] .= .-conj.(J[2:(m + 1), 1, :])
+    Y  = propagate!(P, batch(Ωs) .+ J, 2.345)
+    @test reldiff(Y, X) < 1e-13
 end
 
 @testset "tangent!, slice by slice as OKF + Flows " begin
@@ -126,6 +134,15 @@ end
     Xp = propagate!(P, batch(Ωs) .+ h .* batch(Λs), τ)
     Xm = propagate!(P, batch(Ωs) .- h .* batch(Λs), τ)
     @test reldiff((Xp .- Xm) ./ (2h), V) < 1e-7
+
+    # ---- the tangent vanishes outside the fields of OKF ----
+    mask = KS._mask(n, m)
+    Random.seed!(4)
+    J = randn(ComplexF64, 2m + 2, m + 2, 3) .* (1 .- mask)
+    J[2:(m + 1), 1, :] .+= randn(ComplexF64, m, 3)
+    J[(2m + 2):-1:(m + 3), 1, :] .= .-conj.(J[2:(m + 1), 1, :])
+    tangent!(P, batch(Ωs), J, τ)
+    @test maximum(abs, J) == 0
 end
 
 @testset "shift, generator and inner product      " begin
