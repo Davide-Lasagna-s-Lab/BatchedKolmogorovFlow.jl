@@ -6,9 +6,9 @@ with all the segments integrated together, on the CPU or on the GPU.
 The vorticity equation is that of OpenKolmogorovFlow.jl (OKF), advanced by
 the IMEX Runge–Kutta scheme `CB3R2R3e` of Flows.jl with constant steps. Both
 are dependencies, not registered: develop them in the environment. A batch of `B` fields is one complex array, and every
-operation acts on all its fields at once: the derivatives, the masks and the
+operation acts on all its fields at once: the derivatives and the
 products are broadcasts, the transforms of the nonlinear term are plans over
-the first two dimensions, batched over the third.
+the first two dimensions, batched over the others.
 
 ## The state
 
@@ -21,11 +21,16 @@ campaigns use `n = 33`, `m = 49`.
 
 The code is generic over the array type. With `array=CuArray` (CUDA loaded by
 the user, not a dependency of the package) the batches live on the GPU and
-cuFFT does the transforms; nothing indexes scalars. The real-to-complex
-transforms of cuFFT halve the first dimension of the region while the fields of
-OKF halve the second, so the transforms work on transposed copies, written and
-read through a `PermutedDimsArray` in the broadcasts that apply the
-derivatives, the mask and the normalisation.
+cuFFT does the transforms; nothing indexes scalars. An extension then runs the
+inverse transform without the copy that the `mul!` of cuFFT makes of its input.
+
+Inside, the time stepper acts on compact batches of the active modes alone, a
+complex array `(n+1, 2n+1, B)` with `j` down the rows and `k = 0, …, n, -n, …, -1`
+across the columns, 45% of the stored entries. The real-to-complex transforms of
+cuFFT halve the first dimension of the region, so `x` runs along the first
+dimension of the compact batches and of the transforms. `propagate!`, `tangent!`
+and `rhs!` convert from the fields and back at their ends, which is the
+projection onto the fields and one transposition.
 
 ## Interface
 
@@ -49,9 +54,8 @@ preconditioner `N k` at once.
 | `dshift!(P, out, X)` | the generator of the shift along `x`, `im j X`, as OKF's `ddx!` |
 | `realdot(X, Y)` | the inner product of OKF (`dot` of `FTField`s), summed over the fields, one reduction |
 
-`X` passed to `propagate!` and `tangent!` must be an array of the type of the
-propagator, not a view (Flows dispatches on the type of the state). `shift!`,
-`dshift!` and `realdot` take views and any number of trailing batch
+`propagate!`, `tangent!` and `rhs!` take batches of three dimensions, views too.
+`shift!`, `dshift!` and `realdot` take views and any number of trailing batch
 dimensions. `shift!` is a method of OKF's `shift!`, so both packages can be
 loaded together.
 
