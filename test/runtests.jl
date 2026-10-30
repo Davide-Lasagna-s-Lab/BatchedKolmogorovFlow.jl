@@ -8,6 +8,8 @@ using KolmogorovShootingGPU
 
 const KS = KolmogorovShootingGPU
 
+include(joinpath(@__DIR__, "..", "examples", "orbits.jl"))
+
 # ---- a small grid and a few smooth fields near the laminar flow, as FTFields of OKF ----
 const n  = 8
 const m  = 12
@@ -159,6 +161,37 @@ end
     J[(2m + 2):-1:(m + 3), 1, :] .= .-conj.(J[2:(m + 1), 1, :])
     tangent!(P, batch(Ωs), J, τ)
     @test maximum(abs, J) == 0
+end
+
+@testset "make_seeds, on the grid of the recurrence" begin
+    Ωs = okf_fields(1)
+    P  = KolmogorovPropagator(n, m, Re, kf; dt=dt)
+    x  = batch(Ωs)
+    T  = 5.37
+
+    # ---- five segments of 1.074, not a whole number of steps ----
+    X = make_seeds(P, (X=x, T=T, s=0.0, ℓy=0.0, kind=:seeds), 1.0)
+    @test size(X, 3) == 5
+    @test X[:, :, 1] == x[:, :, 1]
+
+    # ---- each seed lies on the trajectory by whole steps, the rest of a step taken on a copy ----
+    for q in 2:5
+        t = (q - 1)*T/5
+        w = floor(Int, t/dt)
+        y = propagate!(P, propagate!(P, copy(x), w*dt), t - w*dt)
+        @test reldiff(X[:, :, q], y) < 1e-13
+    end
+
+    # ---- going on from each shorter step leaves that trajectory ----
+    z = copy(x)
+    for q in 1:4
+        propagate!(P, z, T/5)
+    end
+    @test reldiff(X[:, :, 5], z) > 1e3*reldiff(X[:, :, 5], propagate!(P, propagate!(P, copy(x), 429*dt), 4T/5 - 429*dt))
+
+    # ---- dense seeds are the states of the file, with no integration ----
+    Y = cat(x, 2 .* x; dims=3)
+    @test make_seeds(P, (X=Y, T=2.2, s=0.0, ℓy=0.0, kind=:seeds), 1.1) == Y
 end
 
 @testset "shift, generator and inner product      " begin

@@ -87,7 +87,11 @@ The tests compare every function with OKF and Flows on a small grid (`n = 8`,
 a centred difference of `propagate!`. `examples/timing.jl` times one
 `propagate!` and one `tangent!` of `B` fields over `τ = 10` at the resolution of
 the campaigns. `examples/orbits.jl` reads the orbits and the seeds of the
-campaigns (`nksearch-upos`, `orbits`, recurrences.jl) into batches of seeds.
+campaigns (`nksearch-upos`, `orbits`, recurrences.jl) into batches of seeds. A
+state that must fill several segments is advanced by whole steps of `dt`, and
+each shooting point takes the rest of a step on a copy. A shorter step that the
+integration went on from would leave the trajectory of the simulation about
+`1e-9` off, and the recurrence would be lost by `T ≈ 150`.
 
 On one core of the laptop (M-series, FFTW), one field over `τ = 10` at
 `n = 33` takes about 1 s with `propagate!`, close to OKF, and 2.7 s with
