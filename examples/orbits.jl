@@ -74,14 +74,20 @@ of its `Ns` instants closest to `T/segment`, and the instants themselves.
 function make_seeds(P, orbit, segment::Real)
     N₀ = size(orbit.X, 3)
     if orbit.kind === :seeds
-        # ---- the stored seeds, advanced together by T/M to fill their segments ----
+        # ---- the stored seeds, advanced together to fill their segments: whole steps on the grid of
+        #      the recurrence, and the part of a step that is left on a copy, which the next segment
+        #      does not continue, because a shorter step would leave the trajectory of the simulation ----
         p = max(1, round(Int, orbit.T / (N₀ * segment)))
         M = N₀ * p
         X = zeros(ComplexF64, size(orbit.X, 1), size(orbit.X, 2), M)
         Y = KolmogorovShootingGPU._device(P.template, orbit.X)
+        w = 0
         for q in 1:p
-            X[:, :, q:p:M] .= Array(Y)
-            q < p && propagate!(P, Y, orbit.T / M)
+            t = (q - 1) * orbit.T / M
+            v = floor(Int, t / P.dt + 1e-6)
+            v > w && propagate!(P, Y, (v - w) * P.dt)
+            w = v
+            X[:, :, q:p:M] .= Array(t > w * P.dt ? propagate!(P, copy(Y), t - w * P.dt) : Y)
         end
     else
         # ---- the instants of the orbit at equal intervals ----
