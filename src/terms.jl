@@ -136,6 +136,7 @@ struct ExplicitTerm{C4, R4, PB, PF, R, U}
         # ---- transforms over the first two dimensions, all the fields in one call ----
         ifft = plan_brfft(F̂, 2m + 2, (1, 2))
         fft  = plan_rfft(w, (1, 2))
+        F̂    = _input(ifft, F̂)
 
         # ---- assemble ----
         R = typeof(_device(template, a))
@@ -160,6 +161,10 @@ struct ExplicitTerm{C4, R4, PB, PF, R, U}
     end
 end
 
+# the array that the inverse transform reads, and the transform; methods for the GPU in an extension
+_input(plan, F̂)        = F̂
+_inverse!(f, plan, F̂)  = mul!(f, plan, F̂)
+
 # the velocity (u, v) of the compact fields Ω, in physical space into E.f, with u = -∂ψ/∂y,
 # v = ∂ψ/∂x and Δψ = ω. The transform destroys F̂, so that its zeros are written again
 function _velocity!(E::ExplicitTerm, Ω::AbstractArray)
@@ -170,7 +175,7 @@ function _velocity!(E::ExplicitTerm, Ω::AbstractArray)
     view(E.F̂, E.J, E.K⁻, :, 1) .= (im .* view(E.a, :, E.c⁻)) .* Ω⁻
     view(E.F̂, E.J, E.K⁺, :, 2) .= (im .* view(E.b, :, E.c⁺)) .* Ω⁺
     view(E.F̂, E.J, E.K⁻, :, 2) .= (im .* view(E.b, :, E.c⁻)) .* Ω⁻
-    mul!(E.f, E.ifft, E.F̂)
+    _inverse!(E.f, E.ifft, E.F̂)
 
     return E
 end
