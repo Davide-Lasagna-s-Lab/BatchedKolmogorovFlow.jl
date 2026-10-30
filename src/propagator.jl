@@ -123,6 +123,42 @@ function _tangent(P::KolmogorovPropagator, B::Int)
     end
 end
 
+# One step of CB3R2R3e, as `step!` of Flows, on compact batches. The state of the first stage is x,
+# and the product with the viscous term and the implicit solve are one kernel, so that a stage has
+# two copies of the batch fewer to move
+function Flows.step!(method::Flows.CB3R2R3e{X, Flows.NormalMode},
+                        sys::Flows.System{1, D, <:ExplicitTerm, <:ImplicitTerm},
+                          t::Real,
+                         Δt::Real,
+                          x::X,
+                           ::Nothing) where {X, D}
+    y, z, w = method.store
+    tab     = Flows.CB3e
+
+    for s in 1:4
+        # ---- the state of the stage ----
+        if s > 1
+            αᴵ  = (tab[:aᴵ, s, s - 1] - tab[:bᴵ, s - 1])*Δt
+            αᴱ  = (tab[:aᴱ, s, s - 1] - tab[:bᴱ, s - 1])*Δt
+            y  .= x .+ αᴵ .* z .+ αᴱ .* y
+        end
+        Y = s == 1 ? x : y
+
+        # ---- the implicit stage, then the explicit term at its result ----
+        c   = tab[:aᴵ, s, s]*Δt
+        _implicit!(z, sys.A, c, Y)
+        w  .= Y .+ c .* z
+        sys.g(t + tab[:cᴱ, s]*Δt, w, y)
+
+        # ---- the update ----
+        βᴵ  = tab[:bᴵ, s]*Δt
+        βᴱ  = tab[:bᴱ, s]*Δt
+        x  .= x .+ βᴵ .* z .+ βᴱ .* y
+    end
+
+    return nothing
+end
+
 """
     propagate!(P::KolmogorovPropagator, X, τ) -> X
 

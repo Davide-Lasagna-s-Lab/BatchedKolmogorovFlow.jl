@@ -56,6 +56,10 @@ mul!(out::AbstractArray, L::ImplicitTerm, X::AbstractArray) =
 Flows.ImcA!(L::ImplicitTerm, c::Real, Y::AbstractArray, Z::AbstractArray) =
     (Z .= Y ./ (1 .- (c/L.Re) .* L.lap); Z)
 
+# Z = (I - c Δ/Re)⁻¹ (Δ/Re) Y: the two calls above in one kernel
+_implicit!(Z::AbstractArray, L::ImplicitTerm, c::Real, Y::AbstractArray) =
+    (Z .= Y .* (1/L.Re) .* L.lap ./ (1 .- (c/L.Re) .* L.lap); Z)
+
 
 # ---------------------------------------------------------------------------- #
 # The explicit terms for a batch of B fields, advection and forcing of the
