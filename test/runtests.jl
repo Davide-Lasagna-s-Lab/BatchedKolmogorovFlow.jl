@@ -48,8 +48,8 @@ const L = flow(couple(ex, lex), couple(im_, lim), CB3R2R3e(couple(FTField(n, m),
     P  = KolmogorovPropagator(n, m, Re, kf; batch=3)
 
     # ---- explicit terms: the transforms differ, so equal to round-off ----
-    E  = KS.ExplicitTerm(P.template, n, m, kf, 3, :forward)
-    Et = KS.ExplicitTerm(P.template, n, m, kf, 3, :tangent)
+    E  = KS.ExplicitTerm(P.template, n, m, kf, 3)
+    Et = KS.ExplicitTerm(P.template, n, m, kf, 3; base=E)
     dX = E(0.0, X, similar(X))
     dV = Et(0.0, X, dX, V, similar(V))
     for i in 1:3

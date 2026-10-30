@@ -18,7 +18,7 @@ the projection those entries would be carried unchanged, a neutral subspace of
 the tangent map that random perturbations fill.
 
 `n` is the largest active wavenumber and `2m+2` the number of grid points along
-each direction (`m = 3n/2` dealiases the products). The work arrays and the
+each direction, at least `3n + 1`, which dealiases the products. The work arrays and the
 FFT plans of batches of `batch` fields are built at once; those of any other
 batch size at its first use, and kept.
 
@@ -44,8 +44,8 @@ struct KolmogorovPropagator{C<:AbstractArray, R<:AbstractMatrix{Float64}, L}
                               batch::Int=1,
                               array::Type=Array)
         # ---- input checks ----
-        m >= n ||
-            throw(ArgumentError("m must be at least n"))
+        2m + 2 >= 3n + 1 ||
+            throw(ArgumentError("the grid must dealias products, 2m + 2 at least 3n + 1"))
         1 <= kf <= n ||
             throw(ArgumentError("the forcing wavenumber must be in 1:n"))
 
@@ -73,7 +73,7 @@ end
 # the explicit term and the flow of the batches of size B, built at their first use
 function _forward(P::KolmogorovPropagator, B::Int)
     return get!(P.cache, B) do
-        explicit = ExplicitTerm(P.template, P.n, P.m, P.kf, B, :forward)
+        explicit = ExplicitTerm(P.template, P.n, P.m, P.kf, B)
         state    = similar(P.template, ComplexF64, (2P.m + 2, P.m + 2, B))
         ϕ        = Flows.flow(explicit,
                               P.implicit,
@@ -98,8 +98,8 @@ end
 # the flow of the equation coupled to its tangent, for batches of size B
 function _tangent(P::KolmogorovPropagator, B::Int)
     return get!(P.cache, (:tangent, B)) do
-        forward = ExplicitTerm(P.template, P.n, P.m, P.kf, B, :forward)
-        tangent = ExplicitTerm(P.template, P.n, P.m, P.kf, B, :tangent)
+        forward = ExplicitTerm(P.template, P.n, P.m, P.kf, B)
+        tangent = ExplicitTerm(P.template, P.n, P.m, P.kf, B; base=forward)
         state   = similar(P.template, ComplexF64, (2P.m + 2, P.m + 2, B))
         Flows.flow(Flows.couple(forward, tangent),
                    Flows.couple(P.implicit, P.implicit),

@@ -63,7 +63,12 @@ with zero inactive modes and zero mean, as those of the propagator.
 
 Field by field, `propagate!`, `tangent!` and `rhs!` reproduce OKF with Flows to
 round-off (`1e-13` relative over a few hundred steps in the tests), the
-implicit term exactly.
+implicit term exactly. The nonlinear term is written in the form of Basdevant
+(1983), `-(∂²/∂x² - ∂²/∂y²)(u v) - ∂²/∂x∂y (v² - u²)`, with two inverse and two
+forward transforms against the four and one of OKF. The two forms agree to
+round-off on a grid that dealiases the products, so `2m + 2 ≥ 3n + 1` is
+required. The tangent adds two and two transforms, and takes the velocity of
+the base from the term of the equation.
 
 ## Tests and examples
 
