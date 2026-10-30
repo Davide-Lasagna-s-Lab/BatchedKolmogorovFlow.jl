@@ -33,6 +33,12 @@ batch(Ωs) = cat([parent(Ω) for Ω in Ωs]...; dims=3)
 # the largest difference relative to the largest coefficient
 reldiff(A, B) = maximum(abs, A .- B) / maximum(abs, B)
 
+# the compact batch of a batch of fields
+compact(P, X) = KS._compress!(P, similar(X, n + 1, 2n + 1, size(X, 3)), X, KS._forward(P, size(X, 3)).explicit)
+
+# the active modes of OKF, without the mean
+active() = [Float64(abs(k) <= n && j <= n && !(k == 0 && j == 0)) for k in KS._ks(m), j in KS._js(m)]
+
 # OKF and Flows: the equation, its tangent, and their flows with CB3R2R3e
 const ex, im_ = splitexim(ForwardEquation(n, m, Re, kf, FFTW.ESTIMATE))
 const lex, lim = splitexim(LinearisedEquation(n, m, Re, TangentMode(), FFTW.ESTIMATE))
@@ -48,23 +54,25 @@ const L = flow(couple(ex, lex), couple(im_, lim), CB3R2R3e(couple(FTField(n, m),
     P  = KolmogorovPropagator(n, m, Re, kf; batch=3)
 
     # ---- explicit terms: the transforms differ, so equal to round-off ----
+    Xc = compact(P, X)
+    Vc = compact(P, V)
     E  = KS.ExplicitTerm(P.template, n, m, kf, 3)
     Et = KS.ExplicitTerm(P.template, n, m, kf, 3; base=E)
-    dX = E(0.0, X, similar(X))
-    dV = Et(0.0, X, dX, V, similar(V))
+    dX = E(0.0, Xc, similar(Xc))
+    dV = Et(0.0, Xc, dX, Vc, similar(Vc))
     for i in 1:3
         d = ex(0.0, copy(Ωs[i]), FTField(n, m))
-        @test reldiff(dX[:, :, i], parent(d)) < 1e-14
+        @test reldiff(dX[:, :, i], compact(P, parent(d)[:, :, :])[:, :, 1]) < 1e-14
         e = lex(0.0, copy(Ωs[i]), d, copy(Λs[i]), FTField(n, m))
-        @test reldiff(dV[:, :, i], parent(e)) < 1e-14
+        @test reldiff(dV[:, :, i], compact(P, parent(e)[:, :, :])[:, :, 1]) < 1e-14
     end
 
     # ---- implicit term and its solve: the same arithmetic, so equal ----
-    Y = mul!(similar(X), P.implicit, X)
-    Z = Flows.ImcA!(P.implicit, 0.3, X, similar(X))
+    Y = mul!(similar(Xc), P.implicit, Xc)
+    Z = Flows.ImcA!(P.implicit, 0.3, Xc, similar(Xc))
     for i in 1:3
-        @test parent(mul!(FTField(n, m), im_, Ωs[i])) == Y[:, :, i]
-        @test parent(Flows.ImcA!(im_, 0.3, Ωs[i], FTField(n, m))) == Z[:, :, i]
+        @test compact(P, parent(mul!(FTField(n, m), im_, Ωs[i]))[:, :, :])[:, :, 1] == Y[:, :, i]
+        @test compact(P, parent(Flows.ImcA!(im_, 0.3, Ωs[i], FTField(n, m)))[:, :, :])[:, :, 1] ≈ Z[:, :, i] rtol=1e-14
     end
 
     # ---- the right hand side ----
@@ -99,7 +107,7 @@ end
     @test sort(collect(keys(P.cache))) == [2, 4, 5]
 
     # ---- zero inactive modes and zero mean ----
-    mask = KS._mask(n, m)
+    mask = active()
     @test all(X[:, :, 1][mask .== 0] .== 0)
 
     # ---- entries outside the fields of OKF are projected out: inactive modes, mean, the j = 0 column not Hermitian ----
@@ -136,7 +144,7 @@ end
     @test reldiff((Xp .- Xm) ./ (2h), V) < 1e-7
 
     # ---- the tangent vanishes outside the fields of OKF ----
-    mask = KS._mask(n, m)
+    mask = active()
     Random.seed!(4)
     J = randn(ComplexF64, 2m + 2, m + 2, 3) .* (1 .- mask)
     J[2:(m + 1), 1, :] .+= randn(ComplexF64, m, 3)

@@ -15,11 +15,12 @@
 # from the term of the equation, which Flows calls first at the same state, and
 # adds two and two transforms, against eight and one in OKF.
 #
-# The real-to-complex transforms of cuFFT halve the first dimension of the
-# region, while the fields of OKF halve the second (x). The transforms work on
-# transposed copies, physical space as (x, y, batch) and Fourier space as
-# (j, k, batch), written and read through a PermutedDimsArray in the same
-# broadcasts that apply the derivatives, the mask and the normalisation.
+# The terms act on compact batches, the active modes alone. A compact batch is a complex array
+# (n+1, 2n+1, B), j = 0, …, n down the rows and k = 0, …, n, -n, …, -1 across the columns: 45% of the
+# stored entries of a field of OKF, so that every kernel of the time stepper moves less memory. The
+# real-to-complex transforms of cuFFT halve the first dimension of the region, while the fields of
+# OKF halve the second (x). The transforms therefore work with x along the first dimension, as the
+# compact batches do, and only the conversions to and from the fields transpose.
 
 # a host array copied to the device of `template`
 _device(template::AbstractArray, h::AbstractArray) =
@@ -29,32 +30,21 @@ _device(template::AbstractArray, h::AbstractArray) =
 _ks(m::Int) = [r <= m ? r : r - (2m + 2) for r in 0:(2m + 1)]
 _js(m::Int) = collect(0:(m + 1))
 
-# the active modes of OKF, |k| ≤ n and j ≤ n, without the mean
-_mask(n::Int, m::Int) = [Float64(abs(k) <= n && j <= n && !(k == 0 && j == 0))
-                         for k in _ks(m), j in _js(m)]
+# the signed wavenumbers k along the columns of a compact batch
+_kc(n::Int) = [0:n; -n:-1]
 
 
 # ---------------------------------------------------------------------------- #
 # The implicit term, Δ/Re, diagonal in Fourier space
 # ---------------------------------------------------------------------------- #
 struct ImplicitTerm{R<:AbstractMatrix{Float64}}
-      Re::Float64 # Reynolds number
-     lap::R       # -(j² + k²) on the active modes, zero elsewhere, (2m+2, m+2)
-      k2::R       # j² + k², (2m+2, m+2)
-    mask::R       # one on the active modes, zero elsewhere and on the mean
+     Re::Float64 # Reynolds number
+    lap::R       # -(j² + k²), (n+1, 2n+1)
 
-    function ImplicitTerm(template::AbstractArray, n::Int, m::Int, Re::Real)
-        # ---- wavenumbers in the layout of the fields ----
-        k2   = [Float64(j^2 + k^2) for k in _ks(m), j in _js(m)]
-        mask = _mask(n, m)
-        lap  = .-k2 .* mask
-
-        # ---- on the device ----
-        R = typeof(_device(template, k2))
-        return new{R}(Float64(Re),
-                      _device(template, lap),
-                      _device(template, k2),
-                      _device(template, mask))
+    function ImplicitTerm(template::AbstractArray, n::Int, Re::Real)
+        lap = [-Float64(j^2 + k^2) for j in 0:n, k in _kc(n)]
+        R   = typeof(_device(template, lap))
+        return new{R}(Float64(Re), _device(template, lap))
     end
 end
 
@@ -64,7 +54,7 @@ mul!(out::AbstractArray, L::ImplicitTerm, X::AbstractArray) =
 
 # Z = (I - c Δ/Re)⁻¹ Y, as `Flows.ImcA!` of OKF's ImplicitTerm
 Flows.ImcA!(L::ImplicitTerm, c::Real, Y::AbstractArray, Z::AbstractArray) =
-    (Z .= Y ./ (1 .+ (c/L.Re) .* L.k2) .* L.mask; Z)
+    (Z .= Y ./ (1 .- (c/L.Re) .* L.lap); Z)
 
 
 # ---------------------------------------------------------------------------- #
@@ -72,19 +62,24 @@ Flows.ImcA!(L::ImplicitTerm, c::Real, Y::AbstractArray, Z::AbstractArray) =
 # equation, or the linearised advection of the tangent equation
 # ---------------------------------------------------------------------------- #
 struct ExplicitTerm{C4, R4, PB, PF, R, U}
-       F̂::C4  # velocity to transform, transposed, (m+2, 2m+2, B, 2)
-       f::R4  # the same in physical space, transposed, (2m+2, 2m+2, B, 2)
-       w::R4  # the two products in physical space, transposed, (2m+2, 2m+2, B, 2)
-       ŵ::C4  # their transforms, (m+2, 2m+2, B, 2)
-    ifft::PB  # inverse transform of F̂ into f, unnormalised as OKF
-     fft::PF  # forward transform of w into ŵ, unnormalised
-       a::R   # û = i a Ω̂: k/(j² + k²) on the active modes, transposed, (m+2, 2m+2)
-       b::R   # v̂ = i b Ω̂: -j/(j² + k²) on the active modes, transposed, (m+2, 2m+2)
-       c::R   # weight of the transform of u v: (j² - k²)/(2m+2)² on the active modes, (2m+2, m+2)
-       d::R   # weight of that of v² - u²: j k/(2m+2)² on the active modes, (2m+2, m+2)
-       m::Int # storage cutoff
-      kf::Int # forcing wavenumber
-    base::U   # tangent: the velocity f of the term of the equation; equation: nothing
+       F̂::C4               # velocity to transform, (m+2, 2m+2, B, 2)
+       f::R4               # the same in physical space, (2m+2, 2m+2, B, 2)
+       w::R4               # the two products in physical space, (2m+2, 2m+2, B, 2)
+       ŵ::C4               # their transforms, (m+2, 2m+2, B, 2)
+    ifft::PB               # inverse transform of F̂ into f, unnormalised as OKF
+     fft::PF               # forward transform of w into ŵ, unnormalised
+       a::R                # û = i a Ω̂: k/(j² + k²), compact, zero at the mean
+       b::R                # v̂ = i b Ω̂: -j/(j² + k²), compact, zero at the mean
+       c::R                # weight of the transform of u v: (j² - k²)/(2m+2)², compact
+       d::R                # weight of that of v² - u²: j k/(2m+2)², compact
+       J::UnitRange{Int}   # the rows j = 0, …, n of F̂ and ŵ
+      K⁺::UnitRange{Int}   # the columns k = 0, …, n of F̂ and ŵ
+      K⁻::UnitRange{Int}   # the columns k = -n, …, -1 of F̂ and ŵ
+      c⁺::UnitRange{Int}   # the columns k = 0, …, n of a compact batch
+      c⁻::UnitRange{Int}   # the columns k = -n, …, -1 of a compact batch
+       n::Int              # largest active wavenumber
+      kf::Int              # forcing wavenumber
+    base::U                # tangent: the velocity f of the term of the equation; equation: nothing
 
     function ExplicitTerm(template::AbstractArray,
                                  n::Int,
@@ -106,23 +101,27 @@ struct ExplicitTerm{C4, R4, PB, PF, R, U}
                                                   base.b,
                                                   base.c,
                                                   base.d,
-                                                  m,
+                                                  base.J,
+                                                  base.K⁺,
+                                                  base.K⁻,
+                                                  base.c⁺,
+                                                  base.c⁻,
+                                                  n,
                                                   kf,
                                                   base.f)
         end
 
-        # ---- wavenumbers, in the layout of the fields, one at the mean to avoid 0/0 ----
-        js   = reshape(Float64.(_js(m)), 1, :)
-        ks   = reshape(Float64.(_ks(m)), :, 1)
-        mask = _mask(n, m)
-        d2   = js.^2 .+ ks.^2
+        # ---- wavenumbers, one at the mean to avoid 0/0 ----
+        js = reshape(Float64.(0:n), :, 1)
+        ks = reshape(Float64.(_kc(n)), 1, :)
+        d2 = js.^2 .+ ks.^2
         d2[1, 1] = 1
 
-        # ---- the weights of the inverse and of the forward transforms ----
-        a = permutedims(ks ./ d2 .* mask)
-        b = permutedims(.-js ./ d2 .* mask)
-        c = (js.^2 .- ks.^2) .* mask ./ (2m + 2)^2
-        d = (js .* ks) .* mask ./ (2m + 2)^2
+        # ---- the weights of the inverse and of the forward transforms, zero at the mean ----
+        a = ks ./ d2
+        b = .-js ./ d2
+        c = (js.^2 .- ks.^2) ./ (2m + 2)^2
+        d = (js .* ks) ./ (2m + 2)^2
 
         # ---- work arrays, the two fields stacked along the last dimension ----
         F̂ = similar(template, ComplexF64, (m + 2, 2m + 2, B, 2))
@@ -146,40 +145,55 @@ struct ExplicitTerm{C4, R4, PB, PF, R, U}
                                                                                 _device(template, b),
                                                                                 _device(template, c),
                                                                                 _device(template, d),
-                                                                                m,
+                                                                                1:(n + 1),
+                                                                                1:(n + 1),
+                                                                                (2m + 3 - n):(2m + 2),
+                                                                                1:(n + 1),
+                                                                                (n + 2):(2n + 1),
+                                                                                n,
                                                                                 kf,
                                                                                 nothing)
     end
 end
 
-# the velocity (u, v) of the fields Ω, in physical space into E.f, with u = -∂ψ/∂y, v = ∂ψ/∂x and
-# Δψ = ω, masked as OKF before its inverse transform
+# the velocity (u, v) of the compact fields Ω, in physical space into E.f, with u = -∂ψ/∂y,
+# v = ∂ψ/∂x and Δψ = ω. The transform destroys F̂, so that its zeros are written again
 function _velocity!(E::ExplicitTerm, Ω::AbstractArray)
-    Ωt = PermutedDimsArray(Ω, (2, 1, 3))     # Ωt[j, k, b] = Ω[k, j, b]
-    view(E.F̂, :, :, :, 1) .= (im .* E.a) .* Ωt
-    view(E.F̂, :, :, :, 2) .= (im .* E.b) .* Ωt
+    Ω⁺ = view(Ω, :, E.c⁺, :)
+    Ω⁻ = view(Ω, :, E.c⁻, :)
+    E.F̂ .= 0
+    view(E.F̂, E.J, E.K⁺, :, 1) .= (im .* view(E.a, :, E.c⁺)) .* Ω⁺
+    view(E.F̂, E.J, E.K⁻, :, 1) .= (im .* view(E.a, :, E.c⁻)) .* Ω⁻
+    view(E.F̂, E.J, E.K⁺, :, 2) .= (im .* view(E.b, :, E.c⁺)) .* Ω⁺
+    view(E.F̂, E.J, E.K⁻, :, 2) .= (im .* view(E.b, :, E.c⁻)) .* Ω⁻
     mul!(E.f, E.ifft, E.F̂)
+
     return E
 end
 
-# dΩdt from the two products in E.w, u v and v² - u² or their derivatives: the transforms, the second
-# derivatives of the identity, normalised and masked, and the Hermitian symmetry of the column j = 0,
-# as OKF's ForwardFFT!
+# dΩdt, compact, from the two products in E.w, u v and v² - u² or their derivatives: the transforms
+# with the second derivatives of the identity, and the Hermitian symmetry of the row j = 0, as OKF's
+# ForwardFFT!
 function _forward!(E::ExplicitTerm, dΩdt::AbstractArray)
-    # ---- forward transforms, differentiated, normalised and masked ----
-    m = E.m
+    # ---- forward transforms, differentiated, normalised ----
     mul!(E.ŵ, E.fft, E.w)
-    ŵ1    = PermutedDimsArray(view(E.ŵ, :, :, :, 1), (2, 1, 3))
-    ŵ2    = PermutedDimsArray(view(E.ŵ, :, :, :, 2), (2, 1, 3))
-    dΩdt .= E.c .* ŵ1 .+ E.d .* ŵ2
+    view(dΩdt, :, E.c⁺, :) .= view(E.c, :, E.c⁺) .* view(E.ŵ, E.J, E.K⁺, :, 1) .+
+                              view(E.d, :, E.c⁺) .* view(E.ŵ, E.J, E.K⁺, :, 2)
+    view(dΩdt, :, E.c⁻, :) .= view(E.c, :, E.c⁻) .* view(E.ŵ, E.J, E.K⁻, :, 1) .+
+                              view(E.d, :, E.c⁻) .* view(E.ŵ, E.J, E.K⁻, :, 2)
 
-    # ---- Hermitian symmetry of the j = 0 column, k ↔ -k for k = 1, …, m ----
-    pos  = view(dΩdt, 2:(m + 1), 1, :)
-    neg  = view(dΩdt, (2m + 2):-1:(m + 3), 1, :)
+    # ---- Hermitian symmetry of the row j = 0, k ↔ -k for k = 1, …, n ----
+    return _hermitian!(dΩdt, E.n)
+end
+
+# the row j = 0 of a compact batch Hermitian: its entries at k and -k conjugate
+function _hermitian!(Ω::AbstractArray, n::Int)
+    pos  = view(Ω, 1, 2:(n + 1), :)
+    neg  = view(Ω, 1, (2n + 1):-1:(n + 2), :)
     pos .= 0.5 .* (pos .+ conj.(neg))
     neg .= conj.(pos)
 
-    return dΩdt
+    return Ω
 end
 
 # the equation: dΩdt = -(u ∂ω/∂x + v ∂ω/∂y) + forcing, overwritten, for every field of Ω
@@ -197,8 +211,8 @@ function (E::ExplicitTerm)(t::Real, Ω::AbstractArray, dΩdt::AbstractArray)
     _forward!(E, dΩdt)
 
     # ---- Kolmogorov forcing at k = ±kf, j = 0 ----
-    view(dΩdt, E.kf + 1,        1, :) .-= E.kf/2
-    view(dΩdt, 2E.m + 3 - E.kf, 1, :) .-= E.kf/2
+    view(dΩdt, 1, E.kf + 1,        :) .-= E.kf/2
+    view(dΩdt, 1, 2E.n + 2 - E.kf, :) .-= E.kf/2
 
     return dΩdt
 end

@@ -55,7 +55,7 @@ struct KolmogorovPropagator{C<:AbstractArray, R<:AbstractMatrix{Float64}, L}
         ky       = _device(template, reshape(Float64.(_ks(m)), :, 1))
 
         # ---- assemble, with the flow of the first batch size ----
-        implicit = ImplicitTerm(template, n, m, Re)
+        implicit = ImplicitTerm(template, n, Re)
         P = new{typeof(template), typeof(jx), typeof(implicit)}(n,
                                                                 m,
                                                                 kf,
@@ -70,28 +70,41 @@ struct KolmogorovPropagator{C<:AbstractArray, R<:AbstractMatrix{Float64}, L}
     end
 end
 
-# the explicit term and the flow of the batches of size B, built at their first use
+# the explicit term and the flow of the batches of size B, built at their first use, with a compact
+# batch for the state and one for the time derivative of rhs!
 function _forward(P::KolmogorovPropagator, B::Int)
     return get!(P.cache, B) do
         explicit = ExplicitTerm(P.template, P.n, P.m, P.kf, B)
-        state    = similar(P.template, ComplexF64, (2P.m + 2, P.m + 2, B))
+        state    = similar(P.template, ComplexF64, (P.n + 1, 2P.n + 1, B))
         ϕ        = Flows.flow(explicit,
                               P.implicit,
                               Flows.CB3R2R3e(state),
                               Flows.TimeStepConstant(P.dt))
-        (explicit, ϕ)
+        (; explicit, ϕ, state, work=similar(state))
     end
 end
 
-# the projection of a batch onto the fields of OKF, in place: zero inactive modes and mean, and the
-# Hermitian part of the column j = 0, k ↔ -k; the identity on fields of OKF
-function _project!(P::KolmogorovPropagator, X::AbstractArray)
-    m    = P.m
-    X  .*= P.implicit.mask
-    pos  = view(X, 2:(m + 1), 1, :)
-    neg  = view(X, (2m + 2):-1:(m + 3), 1, :)
-    pos .= 0.5 .* (pos .+ conj.(neg))
-    neg .= conj.(pos)
+# the compact batch Y of the fields X, a projection onto the fields of OKF: the inactive modes and
+# the mean dropped, and the Hermitian part of the column j = 0 kept. The identity on fields of OKF.
+# E.ŵ is the scratch of the transposition
+function _compress!(P::KolmogorovPropagator, Y::AbstractArray, X::AbstractArray, E::ExplicitTerm)
+    Xt = view(E.ŵ, :, :, :, 1)
+    permutedims!(Xt, X, (2, 1, 3))
+    view(Y, :, E.c⁺, :) .= view(Xt, E.J, E.K⁺, :)
+    view(Y, :, E.c⁻, :) .= view(Xt, E.J, E.K⁻, :)
+    view(Y, 1, 1, :)    .= 0
+
+    return _hermitian!(Y, P.n)
+end
+
+# the fields X of the compact batch Y, with zero inactive modes
+function _expand!(P::KolmogorovPropagator, X::AbstractArray, Y::AbstractArray, E::ExplicitTerm)
+    Xt = view(E.ŵ, :, :, :, 1)
+    Xt                 .= 0
+    view(Xt, E.J, E.K⁺, :) .= view(Y, :, E.c⁺, :)
+    view(Xt, E.J, E.K⁻, :) .= view(Y, :, E.c⁻, :)
+    permutedims!(X, Xt, (2, 1, 3))
+
     return X
 end
 
@@ -100,11 +113,13 @@ function _tangent(P::KolmogorovPropagator, B::Int)
     return get!(P.cache, (:tangent, B)) do
         forward = ExplicitTerm(P.template, P.n, P.m, P.kf, B)
         tangent = ExplicitTerm(P.template, P.n, P.m, P.kf, B; base=forward)
-        state   = similar(P.template, ComplexF64, (2P.m + 2, P.m + 2, B))
-        Flows.flow(Flows.couple(forward, tangent),
-                   Flows.couple(P.implicit, P.implicit),
-                   Flows.CB3R2R3e(Flows.couple(state, similar(state))),
-                   Flows.TimeStepConstant(P.dt))
+        state   = similar(P.template, ComplexF64, (P.n + 1, 2P.n + 1, B))
+        tstate  = similar(state)
+        ϕ       = Flows.flow(Flows.couple(forward, tangent),
+                             Flows.couple(P.implicit, P.implicit),
+                             Flows.CB3R2R3e(Flows.couple(state, tstate)),
+                             Flows.TimeStepConstant(P.dt))
+        (; explicit=forward, ϕ, state, tstate)
     end
 end
 
@@ -114,13 +129,12 @@ end
 Advance in place every field of the batch `X` by the time `τ`, all together:
 `floor(τ/dt)` steps of `dt` and a last shorter step that ends on `τ`, as
 `Flows.TimeStepConstant` (a last step shorter than `10⁻⁶ dt` is merged into
-the one before). `X` must be an array of the type of the propagator, not a
-view.
+the one before).
 """
 function propagate!(P::KolmogorovPropagator, X::AbstractArray{ComplexF64, 3}, τ::Real)
-    _, ϕ = _forward(P, size(X, 3))
-    ϕ(_project!(P, X), (0, τ))
-    return X
+    w = _forward(P, size(X, 3))
+    w.ϕ(_compress!(P, w.state, X, w.explicit), (0, τ))
+    return _expand!(P, X, w.state, w.explicit)
 end
 
 """
@@ -135,9 +149,12 @@ when several perturbations share a base.
 """
 function tangent!(P::KolmogorovPropagator, X::AbstractArray{ComplexF64, 3},
                                            V::AbstractArray{ComplexF64, 3}, τ::Real)
-    ϕ = _tangent(P, size(X, 3))
-    ϕ(Flows.couple(_project!(P, X), _project!(P, V)), (0, τ))
-    return V
+    w = _tangent(P, size(X, 3))
+    _compress!(P, w.state, X, w.explicit)
+    _compress!(P, w.tstate, V, w.explicit)
+    w.ϕ(Flows.couple(w.state, w.tstate), (0, τ))
+    _expand!(P, X, w.state, w.explicit)
+    return _expand!(P, V, w.tstate, w.explicit)
 end
 
 """
@@ -147,10 +164,11 @@ Time derivative of every field of the batch `X`: viscous term, advection and
 forcing, as the call of OKF's `ForwardEquation`. `out` is overwritten.
 """
 function rhs!(P::KolmogorovPropagator, out::AbstractArray, X::AbstractArray)
-    explicit, _ = _forward(P, size(X, 3))
-    explicit(0.0, X, out)
-    out .+= X .* P.implicit.lap .* (1/P.implicit.Re)
-    return out
+    w = _forward(P, size(X, 3))
+    Y = _compress!(P, w.state, X, w.explicit)
+    D = w.explicit(0.0, Y, w.work)
+    D .+= Y .* P.implicit.lap .* (1/P.implicit.Re)
+    return _expand!(P, out, D, w.explicit)
 end
 
 """
