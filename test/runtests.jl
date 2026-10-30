@@ -108,6 +108,12 @@ end
     @test all(reldiff(Z[:, :, j], X[:, :, 3]) < 1e-13 for j in 1:5)
     @test sort(collect(keys(P.cache))) == [2, 4, 5]
 
+    # ---- a view of a batch ----
+    Y = batch(Ωs)
+    propagate!(P, view(Y, :, :, 1:2), 2.345)
+    @test reldiff(Y[:, :, 1:2], X[:, :, 1:2]) < 1e-13
+    @test Y[:, :, 3:4] == batch(Ωs[3:4])
+
     # ---- zero inactive modes and zero mean ----
     mask = active()
     @test all(X[:, :, 1][mask .== 0] .== 0)
