@@ -21,6 +21,10 @@
 # real-to-complex transforms of cuFFT halve the first dimension of the region, while the fields of
 # OKF halve the second (x). The transforms therefore work with x along the first dimension, as the
 # compact batches do, and only the conversions to and from the fields transpose.
+#
+# The operations are kernels, not broadcasts, because the time of a batch of a few fields is the time
+# to launch them, and of a large batch the memory they read and write. One kernel writes the two
+# entries of each velocity and of each pair of products, and `step!` in propagator.jl goes further.
 
 # a host array copied to the device of `template`
 _device(template::AbstractArray, h::AbstractArray) =
@@ -56,34 +60,26 @@ mul!(out::AbstractArray, L::ImplicitTerm, X::AbstractArray) =
 Flows.ImcA!(L::ImplicitTerm, c::Real, Y::AbstractArray, Z::AbstractArray) =
     (Z .= Y ./ (1 .- (c/L.Re) .* L.lap); Z)
 
-# Z = (I - c Δ/Re)⁻¹ (Δ/Re) Y: the two calls above in one kernel
-_implicit!(Z::AbstractArray, L::ImplicitTerm, c::Real, Y::AbstractArray) =
-    (Z .= Y .* (1/L.Re) .* L.lap ./ (1 .- (c/L.Re) .* L.lap); Z)
-
 
 # ---------------------------------------------------------------------------- #
 # The explicit terms for a batch of B fields, advection and forcing of the
 # equation, or the linearised advection of the tangent equation
 # ---------------------------------------------------------------------------- #
 struct ExplicitTerm{C4, R4, PB, PF, R, U}
-       F̂::C4               # velocity to transform, (m+2, 2m+2, B, 2)
-       f::R4               # the same in physical space, (2m+2, 2m+2, B, 2)
-       w::R4               # the two products in physical space, (2m+2, 2m+2, B, 2)
-       ŵ::C4               # their transforms, (m+2, 2m+2, B, 2)
-    ifft::PB               # inverse transform of F̂ into f, unnormalised as OKF
-     fft::PF               # forward transform of w into ŵ, unnormalised
-       a::R                # û = i a Ω̂: k/(j² + k²), compact, zero at the mean
-       b::R                # v̂ = i b Ω̂: -j/(j² + k²), compact, zero at the mean
-       c::R                # weight of the transform of u v: (j² - k²)/(2m+2)², compact
-       d::R                # weight of that of v² - u²: j k/(2m+2)², compact
-       J::UnitRange{Int}   # the rows j = 0, …, n of F̂ and ŵ
-      K⁺::UnitRange{Int}   # the columns k = 0, …, n of F̂ and ŵ
-      K⁻::UnitRange{Int}   # the columns k = -n, …, -1 of F̂ and ŵ
-      c⁺::UnitRange{Int}   # the columns k = 0, …, n of a compact batch
-      c⁻::UnitRange{Int}   # the columns k = -n, …, -1 of a compact batch
-       n::Int              # largest active wavenumber
-      kf::Int              # forcing wavenumber
-    base::U                # tangent: the velocity f of the term of the equation; equation: nothing
+       F̂::C4  # velocity to transform, (m+2, 2m+2, B, 2)
+       f::R4  # the same in physical space, (2m+2, 2m+2, B, 2)
+       w::R4  # the two products in physical space, (2m+2, 2m+2, B, 2)
+       ŵ::C4  # their transforms, (m+2, 2m+2, B, 2)
+    ifft::PB  # inverse transform of F̂ into f, unnormalised as OKF
+     fft::PF  # forward transform of w into ŵ, unnormalised
+       a::R   # û = i a Ω̂: k/(j² + k²), compact, zero at the mean
+       b::R   # v̂ = i b Ω̂: -j/(j² + k²), compact, zero at the mean
+       c::R   # weight of the transform of u v: (j² - k²)/(2m+2)², compact
+       d::R   # weight of that of v² - u²: j k/(2m+2)², compact
+       n::Int # largest active wavenumber
+     gap::Int # from the column of k < 0 of a compact batch to its column in F̂ and ŵ
+      kf::Int # forcing wavenumber
+    base::U   # tangent: the velocity f of the term of the equation; equation: nothing
 
     function ExplicitTerm(template::AbstractArray,
                                  n::Int,
@@ -105,12 +101,8 @@ struct ExplicitTerm{C4, R4, PB, PF, R, U}
                                                   base.b,
                                                   base.c,
                                                   base.d,
-                                                  base.J,
-                                                  base.K⁺,
-                                                  base.K⁻,
-                                                  base.c⁺,
-                                                  base.c⁻,
                                                   n,
+                                                  base.gap,
                                                   kf,
                                                   base.f)
         end
@@ -150,12 +142,8 @@ struct ExplicitTerm{C4, R4, PB, PF, R, U}
                                                                                 _device(template, b),
                                                                                 _device(template, c),
                                                                                 _device(template, d),
-                                                                                1:(n + 1),
-                                                                                1:(n + 1),
-                                                                                (2m + 3 - n):(2m + 2),
-                                                                                1:(n + 1),
-                                                                                (n + 2):(2n + 1),
                                                                                 n,
+                                                                                2m + 1 - 2n,
                                                                                 kf,
                                                                                 nothing)
     end
@@ -165,34 +153,85 @@ end
 _input(plan, F̂)        = F̂
 _inverse!(f, plan, F̂)  = mul!(f, plan, F̂)
 
+# the column of F̂ and ŵ of the column k of a compact batch, and the compact column of -k
+@inline _column(k::Int, n::Int, gap::Int) = k <= n + 1 ? k : k + gap
+@inline _minus(k::Int, n::Int)            = k == 1 ? 1 : 2n + 3 - k
+
+# the derivatives of the identity at row j, column k of field i, from the transforms ŵ of the two
+# products, normalised
+@inline function _derivatives(ŵ, c, d, j, k, i, n, gap)
+    K = _column(k, n, gap)
+    return @inbounds c[j, k]*ŵ[j, K, i, 1] + d[j, k]*ŵ[j, K, i, 2]
+end
+
+# the explicit term there, with the Hermitian symmetry of the row j = 0, as OKF's ForwardFFT!, and
+# the force f at k = ±kf, j = 0
+@inline function _nonlinear(ŵ, c, d, j, k, i, n, gap, kf, f)
+    N = _derivatives(ŵ, c, d, j, k, i, n, gap)
+    if j == 1
+        N = 0.5*(N + conj(_derivatives(ŵ, c, d, j, _minus(k, n), i, n, gap)))
+        (k == kf + 1 || k == 2n + 2 - kf) && (N -= f)
+    end
+
+    return N
+end
+
+# the velocity of the fields Ω into F̂, one write of each entry of û and v̂ per read of Ω̂
+@kernel function _velocity_kernel!(F̂, Ω, a, b, n, gap)
+    j, k, i = @index(Global, NTuple)
+    K = _column(k, n, gap)
+    @inbounds begin
+        F̂[j, K, i, 1] = im*a[j, k]*Ω[j, k, i]
+        F̂[j, K, i, 2] = im*b[j, k]*Ω[j, k, i]
+    end
+end
+
+# the products u v and v² - u² at a point of the grid
+@kernel function _products_kernel!(w, f)
+    p, q, i = @index(Global, NTuple)
+    @inbounds begin
+        u = f[p, q, i, 1]
+        v = f[p, q, i, 2]
+        w[p, q, i, 1] = u*v
+        w[p, q, i, 2] = v*v - u*u
+    end
+end
+
+# their derivatives along the velocity (u′, v′) in f, about the velocity (u, v) in g
+@kernel function _tangent_products_kernel!(w, f, g)
+    p, q, i = @index(Global, NTuple)
+    @inbounds begin
+        u  = g[p, q, i, 1]
+        v  = g[p, q, i, 2]
+        u′ = f[p, q, i, 1]
+        v′ = f[p, q, i, 2]
+        w[p, q, i, 1] = u*v′ + u′*v
+        w[p, q, i, 2] = 2*(v*v′ - u*u′)
+    end
+end
+
+# the explicit term into the compact batch D
+@kernel function _nonlinear_kernel!(D, ŵ, c, d, n, gap, kf, f)
+    j, k, i = @index(Global, NTuple)
+    @inbounds D[j, k, i] = _nonlinear(ŵ, c, d, j, k, i, n, gap, kf, f)
+end
+
 # the velocity (u, v) of the compact fields Ω, in physical space into E.f, with u = -∂ψ/∂y,
 # v = ∂ψ/∂x and Δψ = ω. The transform destroys F̂, so that its zeros are written again
 function _velocity!(E::ExplicitTerm, Ω::AbstractArray)
-    Ω⁺ = view(Ω, :, E.c⁺, :)
-    Ω⁻ = view(Ω, :, E.c⁻, :)
     E.F̂ .= 0
-    view(E.F̂, E.J, E.K⁺, :, 1) .= (im .* view(E.a, :, E.c⁺)) .* Ω⁺
-    view(E.F̂, E.J, E.K⁻, :, 1) .= (im .* view(E.a, :, E.c⁻)) .* Ω⁻
-    view(E.F̂, E.J, E.K⁺, :, 2) .= (im .* view(E.b, :, E.c⁺)) .* Ω⁺
-    view(E.F̂, E.J, E.K⁻, :, 2) .= (im .* view(E.b, :, E.c⁻)) .* Ω⁻
+    _velocity_kernel!(get_backend(Ω))(E.F̂, Ω, E.a, E.b, E.n, E.gap; ndrange=size(Ω))
     _inverse!(E.f, E.ifft, E.F̂)
 
     return E
 end
 
-# dΩdt, compact, from the two products in E.w, u v and v² - u² or their derivatives: the transforms
-# with the second derivatives of the identity, and the Hermitian symmetry of the row j = 0, as OKF's
-# ForwardFFT!
-function _forward!(E::ExplicitTerm, dΩdt::AbstractArray)
-    # ---- forward transforms, differentiated, normalised ----
+# the two products from the velocity in E.f, and their transforms
+function _products!(E::ExplicitTerm)
+    _products_kernel!(get_backend(E.f))(E.w, E.f; ndrange=size(E.f)[1:3])
     mul!(E.ŵ, E.fft, E.w)
-    view(dΩdt, :, E.c⁺, :) .= view(E.c, :, E.c⁺) .* view(E.ŵ, E.J, E.K⁺, :, 1) .+
-                              view(E.d, :, E.c⁺) .* view(E.ŵ, E.J, E.K⁺, :, 2)
-    view(dΩdt, :, E.c⁻, :) .= view(E.c, :, E.c⁻) .* view(E.ŵ, E.J, E.K⁻, :, 1) .+
-                              view(E.d, :, E.c⁻) .* view(E.ŵ, E.J, E.K⁻, :, 2)
 
-    # ---- Hermitian symmetry of the row j = 0, k ↔ -k for k = 1, …, n ----
-    return _hermitian!(dΩdt, E.n)
+    return E
 end
 
 # the row j = 0 of a compact batch Hermitian: its entries at k and -k conjugate
@@ -207,21 +246,9 @@ end
 
 # the equation: dΩdt = -(u ∂ω/∂x + v ∂ω/∂y) + forcing, overwritten, for every field of Ω
 function (E::ExplicitTerm)(t::Real, Ω::AbstractArray, dΩdt::AbstractArray)
-    # ---- the velocity, two inverse transforms in one call ----
     _velocity!(E, Ω)
-
-    # ---- the two products in physical space ----
-    u = view(E.f, :, :, :, 1)
-    v = view(E.f, :, :, :, 2)
-    view(E.w, :, :, :, 1) .= u .* v
-    view(E.w, :, :, :, 2) .= v .* v .- u .* u
-
-    # ---- back to Fourier space ----
-    _forward!(E, dΩdt)
-
-    # ---- Kolmogorov forcing at k = ±kf, j = 0 ----
-    view(dΩdt, 1, E.kf + 1,        :) .-= E.kf/2
-    view(dΩdt, 1, 2E.n + 2 - E.kf, :) .-= E.kf/2
+    _products!(E)
+    _nonlinear_kernel!(get_backend(Ω))(dΩdt, E.ŵ, E.c, E.d, E.n, E.gap, E.kf, E.kf/2; ndrange=size(Ω))
 
     return dΩdt
 end
@@ -231,17 +258,10 @@ end
 # is that of the term of the equation, called before this one
 function (E::ExplicitTerm)(t::Real, Ω::AbstractArray, dΩdt::AbstractArray,
                                     Λ::AbstractArray, dΛdt::AbstractArray)
-    # ---- the velocity of the perturbation, two inverse transforms in one call ----
     _velocity!(E, Λ)
+    _tangent_products_kernel!(get_backend(Λ))(E.w, E.f, E.base; ndrange=size(E.f)[1:3])
+    mul!(E.ŵ, E.fft, E.w)
+    _nonlinear_kernel!(get_backend(Λ))(dΛdt, E.ŵ, E.c, E.d, E.n, E.gap, E.kf, 0.0; ndrange=size(Λ))
 
-    # ---- the derivatives of the two products in physical space ----
-    u  = view(E.base, :, :, :, 1)
-    v  = view(E.base, :, :, :, 2)
-    u′ = view(E.f, :, :, :, 1)
-    v′ = view(E.f, :, :, :, 2)
-    view(E.w, :, :, :, 1) .= u .* v′ .+ u′ .* v
-    view(E.w, :, :, :, 2) .= 2 .* (v .* v′ .- u .* u′)
-
-    # ---- back to Fourier space, with zero mean ----
-    return _forward!(E, dΛdt)
+    return dΛdt
 end

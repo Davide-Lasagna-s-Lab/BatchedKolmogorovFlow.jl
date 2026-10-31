@@ -71,7 +71,7 @@ struct KolmogorovPropagator{C<:AbstractArray, R<:AbstractMatrix{Float64}, L}
 end
 
 # the explicit term and the flow of the batches of size B, built at their first use, with a compact
-# batch for the state and one for the time derivative of rhs!
+# batch for the state; rhs! writes the time derivative into a register of the flow that step! leaves free
 function _forward(P::KolmogorovPropagator, B::Int)
     return get!(P.cache, B) do
         explicit = ExplicitTerm(P.template, P.n, P.m, P.kf, B)
@@ -80,7 +80,7 @@ function _forward(P::KolmogorovPropagator, B::Int)
                               P.implicit,
                               Flows.CB3R2R3e(state),
                               Flows.TimeStepConstant(P.dt))
-        (; explicit, ϕ, state, work=similar(state))
+        (; explicit, ϕ, state, work=ϕ.meth.store[1])
     end
 end
 
@@ -88,21 +88,30 @@ end
 # the mean dropped, and the Hermitian part of the column j = 0 kept. The identity on fields of OKF.
 # E.ŵ is the scratch of the transposition
 function _compress!(P::KolmogorovPropagator, Y::AbstractArray, X::AbstractArray, E::ExplicitTerm)
+    # ---- the columns of k ≥ 0 and of k < 0, in the compact batch and in the transposed fields ----
+    n  = P.n
+    c⁺ = 1:(n + 1)
+    c⁻ = (n + 2):(2n + 1)
+
     Xt = view(E.ŵ, :, :, :, 1)
     permutedims!(Xt, X, (2, 1, 3))
-    view(Y, :, E.c⁺, :) .= view(Xt, E.J, E.K⁺, :)
-    view(Y, :, E.c⁻, :) .= view(Xt, E.J, E.K⁻, :)
-    view(Y, 1, 1, :)    .= 0
+    view(Y, :, c⁺, :) .= view(Xt, c⁺, c⁺, :)
+    view(Y, :, c⁻, :) .= view(Xt, c⁺, c⁻ .+ E.gap, :)
+    view(Y, 1, 1, :)  .= 0
 
-    return _hermitian!(Y, P.n)
+    return _hermitian!(Y, n)
 end
 
 # the fields X of the compact batch Y, with zero inactive modes
 function _expand!(P::KolmogorovPropagator, X::AbstractArray, Y::AbstractArray, E::ExplicitTerm)
+    n  = P.n
+    c⁺ = 1:(n + 1)
+    c⁻ = (n + 2):(2n + 1)
+
     Xt = view(E.ŵ, :, :, :, 1)
-    Xt                 .= 0
-    view(Xt, E.J, E.K⁺, :) .= view(Y, :, E.c⁺, :)
-    view(Xt, E.J, E.K⁻, :) .= view(Y, :, E.c⁻, :)
+    Xt .= 0
+    view(Xt, c⁺, c⁺, :)         .= view(Y, :, c⁺, :)
+    view(Xt, c⁺, c⁻ .+ E.gap, :) .= view(Y, :, c⁻, :)
     permutedims!(X, Xt, (2, 1, 3))
 
     return X
@@ -123,38 +132,77 @@ function _tangent(P::KolmogorovPropagator, B::Int)
     end
 end
 
-# One step of CB3R2R3e, as `step!` of Flows, on compact batches. The state of the first stage is x,
-# and the product with the viscous term and the implicit solve are one kernel, so that a stage has
-# two copies of the batch fewer to move
+# All the work in Fourier space between two pairs of transforms, one read and one write per entry of
+# each array. With the explicit term N of the stage before, its update of x and the state of this
+# stage are, as in `step!` of Flows,
+#
+#     x ← x + βᴵ z + βᴱ N,     y = x + αᴵ z + αᴱ N,
+#
+# and then z = (I - γ A)⁻¹ A y, and the velocity of y + γ z goes into F̂ for the next explicit term.
+# The registers y and w of Flows are not needed. The first stage has no stage before it, the last
+# call has no stage after it.
+@kernel function _stage_kernel!(x, z, ŵ, F̂, lap, a, b, c, d, C)
+    j, k, i = @index(Global, NTuple)
+    @inbounds begin
+        Y = x[j, k, i]
+        Z = z[j, k, i]
+
+        # ---- the end of the stage before, and the state of this one ----
+        if !C.first
+            N = _nonlinear(ŵ, c, d, j, k, i, C.n, C.gap, C.kf, C.f)
+            X = Y + C.βᴵ*Z + C.βᴱ*N
+            Y = X + C.αᴵ*Z + C.αᴱ*N
+            x[j, k, i] = X
+        end
+
+        # ---- this stage: the implicit solve, and the velocity of the argument of the explicit term ----
+        if !C.last
+            L = C.ν*lap[j, k]
+            Z = Y*L/(1 - C.γ*L)
+            W = Y + C.γ*Z
+            K = _column(k, C.n, C.gap)
+            z[j, k, i]    = Z
+            F̂[j, K, i, 1] = im*a[j, k]*W
+            F̂[j, K, i, 2] = im*b[j, k]*W
+        end
+    end
+end
+
+# the coefficients of the call s of the kernel, from 1, before the first stage, to 5, after the last
+function _coefficients(E::ExplicitTerm, L::ImplicitTerm, s::Int, Δt::Real)
+    tab    = Flows.CB3e
+    first  = s == 1
+    last   = s == 5
+    βᴵ     = first ? 0.0 : tab[:bᴵ, s - 1]*Δt
+    βᴱ     = first ? 0.0 : tab[:bᴱ, s - 1]*Δt
+    αᴵ     = first || last ? 0.0 : (tab[:aᴵ, s, s - 1] - tab[:bᴵ, s - 1])*Δt
+    αᴱ     = first || last ? 0.0 : (tab[:aᴱ, s, s - 1] - tab[:bᴱ, s - 1])*Δt
+    γ      = last ? 0.0 : tab[:aᴵ, s, s]*Δt
+
+    return (; first, last, βᴵ, βᴱ, αᴵ, αᴱ, γ, ν=1/L.Re, n=E.n, gap=E.gap, kf=E.kf, f=E.kf/2)
+end
+
+# One step of CB3R2R3e, as `step!` of Flows, on compact batches: at each stage one kernel in Fourier
+# space, the inverse transforms, one kernel in physical space and the forward transforms
 function Flows.step!(method::Flows.CB3R2R3e{X, Flows.NormalMode},
                         sys::Flows.System{1, D, <:ExplicitTerm, <:ImplicitTerm},
                           t::Real,
                          Δt::Real,
                           x::X,
                            ::Nothing) where {X, D}
-    y, z, w = method.store
-    tab     = Flows.CB3e
+    E       = sys.g
+    L       = sys.A
+    z       = method.store[2]
+    stage!  = _stage_kernel!(get_backend(x))
+    ndrange = size(x)
 
     for s in 1:4
-        # ---- the state of the stage ----
-        if s > 1
-            αᴵ  = (tab[:aᴵ, s, s - 1] - tab[:bᴵ, s - 1])*Δt
-            αᴱ  = (tab[:aᴱ, s, s - 1] - tab[:bᴱ, s - 1])*Δt
-            y  .= x .+ αᴵ .* z .+ αᴱ .* y
-        end
-        Y = s == 1 ? x : y
-
-        # ---- the implicit stage, then the explicit term at its result ----
-        c   = tab[:aᴵ, s, s]*Δt
-        _implicit!(z, sys.A, c, Y)
-        w  .= Y .+ c .* z
-        sys.g(t + tab[:cᴱ, s]*Δt, w, y)
-
-        # ---- the update ----
-        βᴵ  = tab[:bᴵ, s]*Δt
-        βᴱ  = tab[:bᴱ, s]*Δt
-        x  .= x .+ βᴵ .* z .+ βᴱ .* y
+        E.F̂ .= 0
+        stage!(x, z, E.ŵ, E.F̂, L.lap, E.a, E.b, E.c, E.d, _coefficients(E, L, s, Δt); ndrange)
+        _inverse!(E.f, E.ifft, E.F̂)
+        _products!(E)
     end
+    stage!(x, z, E.ŵ, E.F̂, L.lap, E.a, E.b, E.c, E.d, _coefficients(E, L, 5, Δt); ndrange)
 
     return nothing
 end

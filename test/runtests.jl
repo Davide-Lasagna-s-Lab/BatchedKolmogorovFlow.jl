@@ -72,12 +72,10 @@ const L = flow(couple(ex, lex), couple(im_, lim), CB3R2R3e(couple(FTField(n, m),
     # ---- implicit term and its solve: the same arithmetic, so equal ----
     Y = mul!(similar(Xc), P.implicit, Xc)
     Z = Flows.ImcA!(P.implicit, 0.3, Xc, similar(Xc))
-    W = KS._implicit!(similar(Xc), P.implicit, 0.3, Xc)
     for i in 1:3
         @test compact(P, parent(mul!(FTField(n, m), im_, Ωs[i]))[:, :, :])[:, :, 1] == Y[:, :, i]
         @test compact(P, parent(Flows.ImcA!(im_, 0.3, Ωs[i], FTField(n, m)))[:, :, :])[:, :, 1] ≈ Z[:, :, i] rtol=1e-14
     end
-    @test Flows.ImcA!(P.implicit, 0.3, Y, similar(Xc)) ≈ W rtol=1e-14
 
     # ---- the right hand side ----
     eq = ForwardEquation(n, m, Re, kf, FFTW.ESTIMATE)
