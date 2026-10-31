@@ -197,7 +197,7 @@ function Flows.step!(method::Flows.CB3R2R3e{X, Flows.NormalMode},
     ndrange = size(x)
 
     for s in 1:4
-        E.F̂ .= 0
+        _zero!(E.F̂)
         stage!(x, z, E.ŵ, E.F̂, L.lap, E.a, E.b, E.c, E.d, _coefficients(E, L, s, Δt); ndrange)
         _inverse!(E.f, E.ifft, E.F̂)
         _products!(E)

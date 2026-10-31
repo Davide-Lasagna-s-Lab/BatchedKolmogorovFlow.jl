@@ -149,8 +149,10 @@ struct ExplicitTerm{C4, R4, PB, PF, R, U}
     end
 end
 
-# the array that the inverse transform reads, and the transform; methods for the GPU in an extension
+# the array that the inverse transform reads, its zeros, and the transform; methods for the GPU in
+# an extension
 _input(plan, F̂)        = F̂
+_zero!(F̂)              = fill!(F̂, 0)
 _inverse!(f, plan, F̂)  = mul!(f, plan, F̂)
 
 # the column of F̂ and ŵ of the column k of a compact batch, and the compact column of -k
@@ -219,7 +221,7 @@ end
 # the velocity (u, v) of the compact fields Ω, in physical space into E.f, with u = -∂ψ/∂y,
 # v = ∂ψ/∂x and Δψ = ω. The transform destroys F̂, so that its zeros are written again
 function _velocity!(E::ExplicitTerm, Ω::AbstractArray)
-    E.F̂ .= 0
+    _zero!(E.F̂)
     _velocity_kernel!(get_backend(Ω))(E.F̂, Ω, E.a, E.b, E.n, E.gap; ndrange=size(Ω))
     _inverse!(E.f, E.ifft, E.F̂)
 
