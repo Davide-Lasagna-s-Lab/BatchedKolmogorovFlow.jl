@@ -71,7 +71,7 @@ struct KolmogorovPropagator{C<:AbstractArray, R<:AbstractMatrix{Float64}, L}
 end
 
 # the explicit term and the flow of the batches of size B, built at their first use, with a compact
-# batch for the state; rhs! writes the time derivative into a register of the flow that step! leaves free
+# batch for the state; rhs! writes the time derivative into a register that step! leaves free
 function _forward(P::KolmogorovPropagator, B::Int)
     return get!(P.cache, B) do
         explicit = ExplicitTerm(P.template, P.n, P.m, P.kf, B)
@@ -138,9 +138,9 @@ end
 #
 #     x ← x + βᴵ z + βᴱ N,     y = x + αᴵ z + αᴱ N,
 #
-# and then z = (I - γ A)⁻¹ A y, and the velocity of y + γ z goes into F̂ for the next explicit term.
-# The registers y and w of Flows are not needed. The first stage has no stage before it, the last
-# call has no stage after it.
+# and then z = (I - γ A)⁻¹ A y, and the velocity of y + γ z goes into F̂ for the next explicit
+# term. The registers y and w of Flows are not needed. The first stage has no stage before it, the
+# last call has no stage after it.
 @kernel function _stage_kernel!(x, z, ŵ, F̂, lap, a, b, c, d, C)
     j, k, i = @index(Global, NTuple)
     @inbounds begin
@@ -155,7 +155,7 @@ end
             x[j, k, i] = X
         end
 
-        # ---- this stage: the implicit solve, and the velocity of the argument of the explicit term ----
+        # ---- this stage: the implicit solve, and the velocity for the explicit term ----
         if !C.last
             L = C.ν*lap[j, k]
             Z = Y*L/(1 - C.γ*L)
@@ -179,7 +179,18 @@ function _coefficients(E::ExplicitTerm, L::ImplicitTerm, s::Int, Δt::Real)
     αᴱ     = first || last ? 0.0 : (tab[:aᴱ, s, s - 1] - tab[:bᴱ, s - 1])*Δt
     γ      = last ? 0.0 : tab[:aᴵ, s, s]*Δt
 
-    return (; first, last, βᴵ, βᴱ, αᴵ, αᴱ, γ, ν=1/L.Re, n=E.n, gap=E.gap, kf=E.kf, f=E.kf/2)
+    return (; first,
+              last,
+              βᴵ,
+              βᴱ,
+              αᴵ,
+              αᴱ,
+              γ,
+              ν=1/L.Re,
+              n=E.n,
+              gap=E.gap,
+              kf=E.kf,
+              f=E.kf/2)
 end
 
 # One step of CB3R2R3e, as `step!` of Flows, on compact batches: at each stage one kernel in Fourier

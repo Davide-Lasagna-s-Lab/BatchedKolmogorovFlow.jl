@@ -16,8 +16,8 @@
 # adds two and two transforms, against eight and one in OKF.
 #
 # The terms act on compact batches, the active modes alone. A compact batch is a complex array
-# (n+1, 2n+1, B), j = 0, …, n down the rows and k = 0, …, n, -n, …, -1 across the columns: 45% of the
-# stored entries of a field of OKF, so that every kernel of the time stepper moves less memory. The
+# (n+1, 2n+1, B), j = 0, …, n down the rows and k = 0, …, n, -n, …, -1 across the columns: 45% of
+# the stored entries of a field of OKF, so that every kernel of the time stepper moves less memory. The
 # real-to-complex transforms of cuFFT halve the first dimension of the region, while the fields of
 # OKF halve the second (x). The transforms therefore work with x along the first dimension, as the
 # compact batches do, and only the conversions to and from the fields transpose.
@@ -250,20 +250,22 @@ end
 function (E::ExplicitTerm)(t::Real, Ω::AbstractArray, dΩdt::AbstractArray)
     _velocity!(E, Ω)
     _products!(E)
-    _nonlinear_kernel!(get_backend(Ω))(dΩdt, E.ŵ, E.c, E.d, E.n, E.gap, E.kf, E.kf/2; ndrange=size(Ω))
+    nonlinear! = _nonlinear_kernel!(get_backend(Ω))
+    nonlinear!(dΩdt, E.ŵ, E.c, E.d, E.n, E.gap, E.kf, E.kf/2; ndrange=size(Ω))
 
     return dΩdt
 end
 
 # the tangent equation about the fields Ω: dΛdt = -(u ∂λ/∂x + v ∂λ/∂y + u′ ∂ω/∂x + v′ ∂ω/∂y),
-# overwritten, for every perturbation of Λ, the call of Flows for a coupled system. The velocity of Ω
-# is that of the term of the equation, called before this one
+# overwritten, for every perturbation of Λ, the call of Flows for a coupled system. The velocity
+# of Ω is that of the term of the equation, called before this one
 function (E::ExplicitTerm)(t::Real, Ω::AbstractArray, dΩdt::AbstractArray,
                                     Λ::AbstractArray, dΛdt::AbstractArray)
     _velocity!(E, Λ)
     _tangent_products_kernel!(get_backend(Λ))(E.w, E.f, E.base; ndrange=size(E.f)[1:3])
     mul!(E.ŵ, E.fft, E.w)
-    _nonlinear_kernel!(get_backend(Λ))(dΛdt, E.ŵ, E.c, E.d, E.n, E.gap, E.kf, 0.0; ndrange=size(Λ))
+    nonlinear! = _nonlinear_kernel!(get_backend(Λ))
+    nonlinear!(dΛdt, E.ŵ, E.c, E.d, E.n, E.gap, E.kf, 0.0; ndrange=size(Λ))
 
     return dΛdt
 end
