@@ -7,8 +7,8 @@ The vorticity equation is that of OpenKolmogorovFlow.jl (OKF), advanced by
 the IMEX Runge–Kutta scheme `CB3R2R3e` of Flows.jl with constant steps. Both
 are dependencies, not registered: develop them in the environment. A batch of `B` fields is one complex array, and every
 operation acts on all its fields at once: the derivatives and the
-products are broadcasts, the transforms of the nonlinear term are plans over
-the first two dimensions, batched over the others.
+products are kernels of KernelAbstractions.jl, the transforms of the nonlinear
+term are plans over the first two dimensions, batched over the others.
 
 ## The state
 
@@ -31,6 +31,14 @@ cuFFT halve the first dimension of the region, so `x` runs along the first
 dimension of the compact batches and of the transforms. `propagate!`, `tangent!`
 and `rhs!` convert from the fields and back at their ends, which is the
 projection onto the fields and one transposition.
+
+A stage of `propagate!` is two kernels and two transforms. The kernel in Fourier
+space takes the transforms of the products, makes the explicit term, updates the
+state, solves the implicit stage and writes the velocity into the input of the
+inverse transforms. The kernel in physical space makes the products. The time of
+a few fields is the time to launch the kernels, and of many the memory they read
+and write, so both ends gain from having two kernels and few arrays. `tangent!`
+uses the same terms in the step of Flows.
 
 ## Interface
 
@@ -93,9 +101,8 @@ each shooting point takes the rest of a step on a copy. A shorter step that the
 integration went on from would leave the trajectory of the simulation about
 `1e-9` off, and the recurrence would be lost by `T ≈ 150`.
 
-On one core of the laptop (M-series, FFTW), one field over `τ = 10` at
-`n = 33` takes about 1 s with `propagate!`, close to OKF, and 2.7 s with
-`tangent!`;
-the cost grows linearly with `B`. The batched code is single-threaded on the
-CPU (Julia broadcasts), so OKF with one thread per segment is faster on a
-multicore node: the package is for the GPU.
+On one core of a laptop (M-series, FFTW), one field over `τ = 10` at `n = 33`
+takes about 0.5 s with `propagate!`, half the time of OKF, and 1.2 s with
+`tangent!`, and the cost grows linearly with `B`. The kernels run on the threads
+of Julia. On an H200 one field takes 0.11 s and a field in a batch of thousands
+2.7 ms, so the package is for the GPU.
