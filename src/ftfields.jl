@@ -136,6 +136,17 @@ Base.Broadcast.broadcastable(X::FTFields) = X.data
 Base.Broadcast.materialize!(X::FTFields, bc::Base.Broadcast.Broadcasted) =
     (Base.Broadcast.materialize!(X.data, bc); X)
 
+# a broadcast whose leaves are batches, as Flows.jl builds one for each part of a coupled state,
+# written into a batch: the same broadcast on the arrays of the coefficients, so that it runs on
+# their device and not entry by entry
+Base.copyto!(X::FTFields, bc::Base.Broadcast.Broadcasted{<:Base.Broadcast.AbstractArrayStyle{3}}) =
+    (Base.Broadcast.materialize!(X.data, _coefficients(bc)); X)
+
+# the broadcast bc with every batch among its leaves replaced by the array of its coefficients
+_coefficients(bc::Base.Broadcast.Broadcasted) = Base.Broadcast.broadcasted(bc.f, map(_coefficients, bc.args)...)
+_coefficients(X::FTFields)                    = X.data
+_coefficients(x)                              = x
+
 
 # ---------------------------------------------------------------------------- #
 # the symmetry of a field, and the inner product                               #

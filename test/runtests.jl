@@ -104,9 +104,13 @@ dots(X, Y) = vec(Array(realdots(X, Y)))
 # the relative differences of two vectors of inner products, entry by entry
 relerr(a, b) = abs.(a .- b) ./ abs.(a)
 
-# the memory that a second call of f allocates on the CPU, the first having compiled it and built
-# its storage. On the GPU the arrays are on the device, and this sees only their wrappers
+# the memory that a second call of f allocates, the first having compiled it and built its storage:
+# on the CPU, as @allocated counts it; on the GPU, the memory of the device, as CUDA.@allocated
+# counts it, since the CPU there holds only the wrappers of the arrays and the launches of the
+# kernels, a few hundred bytes each. Defined by @eval, so that the macro of CUDA is expanded only
+# once CUDA is loaded
 allocated(f) = (f(); @allocated f())
+DEVICE == "gpu" && @eval allocated(f) = (f(); CUDA.@allocated f())
 
 
 # ---------------------------------------------------------------------------- #
