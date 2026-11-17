@@ -51,8 +51,8 @@ t_okf = @elapsed G(copy(Ω), (0, TAU))
 # ---- batches ----
 P = KolmogorovPropagator(n, m, Re, kf; dt=0.01, array=ARRAY)
 for B in BS
-    X = ARRAY(repeat(parent(Ω), 1, 1, B))
-    V = ARRAY(repeat(parent(Ω), 1, 1, B))
+    X = FTFields(ARRAY(repeat(parent(FTFields([Ω])), 1, 1, B)))
+    V = FTFields(ARRAY(repeat(parent(FTFields([Ω])), 1, 1, B)))
 
     # ---- propagate! ----
     propagate!(P, copy(X), 0.1); wait!()

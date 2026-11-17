@@ -1,5 +1,5 @@
 # Reading the orbits and the recurrences of the Kolmogorov campaigns into
-# batches of seeds in the layout of OpenKolmogorovFlow, as shoot.jl of
+# batches of seeds of the package, as shoot.jl of
 # ReSolver.jl/examples/kolmogorov/upo/shooting does. Included by the scripts of
 # this folder.
 #
@@ -9,59 +9,63 @@
 #     across the columns), and the attributes d1 (period), d2 (shift of NKSearch)
 #     and other_sy (the translation along y by whole wavelengths of the force);
 #   - an orbit of the campaigns: datasets real and imag, (n+1) × (2n+1) × Ns with kx
-#     along the first dimension and ky in FFT order, and the attributes period,
-#     drift and yshift.
+#     along the first dimension and ky in FFT order, the layout of the batches, and
+#     the attributes period, drift and yshift.
 #
 # In both cases the orbit closes as S(Φ_T(x₁), s) = x₁, with S the shift by s along
-# x and by ℓy along y, shift!(P, x, s, ℓy).
+# x, shift!(P, x, s).
 
 using HDF5
 
 """
-    read_orbit(path, n, m, kf) -> (X, T, s, ℓy, kind)
+    read_orbit(path, n) -> (X, T, s, kind)
 
-The states of the orbit in `path`, as a complex array `(2m+2, m+2, N₀)` in the
-layout of OKF and in the lab frame, its period `T`, its shift `s` along `x` and
-its translation `ℓy` along `y`. `kind` is `:seeds` or `:orbit`.
+The states of the orbit in `path`, as a batch of `N₀` fields, an `FTFields{n}`, in the lab
+frame, its period `T` and its shift `s` along `x`. `kind` is `:seeds` or `:orbit`. An orbit that
+closes after a translation along `y` is refused, since the propagator shifts along `x` alone.
 """
-function read_orbit(path::String, n::Int, m::Int, kf::Int)
-    # ---- the row of OKF of the wavenumber ky ----
-    row(ky) = ky >= 0 ? ky + 1 : 2m + 3 + ky
+function read_orbit(path::String, n::Int)
+    # ---- the column of a batch of the wavenumber ky ----
+    col(ky) = mod(ky, 2n + 1) + 1
 
     h5open(path, "r") do f
         A = HDF5.attributes(f)
         if haskey(f, "seed_1_real")
             # ---- seeds of NKSearch or of recurrences.jl ----
+            (haskey(A, "other_sy") && Int(read(A["other_sy"])) != 0) &&
+                error("the seeds of $(path) close after a translation along y")
             N₀ = count(k -> endswith(k, "_real"), keys(f))
-            X  = zeros(ComplexF64, 2m + 2, m + 2, N₀)
+            X  = zeros(ComplexF64, n + 1, 2n + 1, N₀)
             for i in 1:N₀
                 raw = read(f["seed_$(i)_real"]) .+ im .* read(f["seed_$(i)_imag"])
                 for kx in 0:n, ky in -n:n
-                    X[row(ky), kx + 1, i] = raw[mod(ky, size(raw, 1)) + 1, kx + 1]
+                    X[kx + 1, col(ky), i] = raw[mod(ky, size(raw, 1)) + 1, kx + 1]
                 end
             end
             X[1, 1, :] .= 0
-            T  = Float64(read(A["d1"]))
-            s  = rem(Float64(read(A["d2"])), 2π, RoundNearest)
-            sy = haskey(A, "other_sy") ? Int(read(A["other_sy"])) : 0
-            return (X=X, T=T, s=s, ℓy=sy*2π/kf, kind=:seeds)
+            T = Float64(read(A["d1"]))
+            s = rem(Float64(read(A["d2"])), 2π, RoundNearest)
+            return (X=FTFields(X), T=T, s=s, kind=:seeds)
         else
             # ---- an orbit of the campaigns, its instants moved back to the lab frame by the drift ----
+            (haskey(A, "yshift") && Float64(read(A["yshift"])) != 0) &&
+                error("the orbit of $(path) closes after a translation along y")
             a  = read(f["real"]) .+ im .* read(f["imag"])
             Ns = size(a, 3)
             T  = Float64(read(A["period"]))
             c  = Float64(read(A["drift"]))
-            ℓy = haskey(A, "yshift") ? Float64(read(A["yshift"])) : 0.0
-            X  = zeros(ComplexF64, 2m + 2, m + 2, Ns)
+            X  = zeros(ComplexF64, n + 1, 2n + 1, Ns)
             for l in 0:(Ns - 1), kx in 0:n, ky in -n:n
-                X[row(ky), kx + 1, l + 1] = a[kx + 1, ky >= 0 ? ky + 1 : 2n + 2 + ky, l + 1] *
-                                            cis(-kx * c * (l * T / Ns))
+                X[kx + 1, col(ky), l + 1] = a[kx + 1, col(ky), l + 1] * cis(-kx * c * (l * T / Ns))
             end
             X[1, 1, :] .= 0
-            return (X=X, T=T, s=c*T, ℓy=-ℓy, kind=:orbit)
+            return (X=FTFields(X), T=T, s=c*T, kind=:orbit)
         end
     end
 end
+
+# the batch X on the device of the batches of the propagator P
+on_device(P, X::FTFields) = FTFields(copyto!(similar(P.template, ComplexF64, size(X)), parent(X)))
 
 """
     make_seeds(P, orbit, segment) -> X
@@ -80,19 +84,20 @@ function make_seeds(P, orbit, segment::Real)
         p = max(1, round(Int, orbit.T / (N₀ * segment)))
         M = N₀ * p
         X = zeros(ComplexF64, size(orbit.X, 1), size(orbit.X, 2), M)
-        Y = KolmogorovShootingGPU._device(P.template, orbit.X)
+        Y = on_device(P, orbit.X)
         w = 0
         for q in 1:p
             t = (q - 1) * orbit.T / M
             v = floor(Int, t / P.dt + 1e-6)
             v > w && propagate!(P, Y, (v - w) * P.dt)
             w = v
-            X[:, :, q:p:M] .= Array(t > w * P.dt ? propagate!(P, copy(Y), t - w * P.dt) : Y)
+            Z = t > w * P.dt ? propagate!(P, copy(Y), t - w * P.dt) : Y
+            X[:, :, q:p:M] .= Array(parent(Z))
         end
     else
         # ---- the instants of the orbit at equal intervals ----
         M = argmin(d -> abs(d - orbit.T / segment), filter(d -> N₀ % d == 0, 1:N₀))
-        X = orbit.X[:, :, 1:(N₀ ÷ M):N₀]
+        X = Array(parent(orbit.X))[:, :, 1:(N₀ ÷ M):N₀]
     end
-    return KolmogorovShootingGPU._device(P.template, X)
+    return on_device(P, FTFields(X))
 end

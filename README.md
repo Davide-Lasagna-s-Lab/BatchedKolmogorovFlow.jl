@@ -1,108 +1,187 @@
 # KolmogorovShootingGPU.jl
 
-A batched propagator of two-dimensional Kolmogorov flow, for multiple shooting
-with all the segments integrated together, on the CPU or on the GPU.
+Two-dimensional Kolmogorov flow for multiple shooting. The package gives the
+vorticity equation, its tangent equation and the transpose of the tangent on
+batches of fields, all the fields of a batch advanced together, on the CPU or
+on the GPU, with the methods that MultipleShooting.jl asks of a propagator.
 
-The vorticity equation is that of OpenKolmogorovFlow.jl (OKF), advanced by
-the IMEX Runge–Kutta scheme `CB3R2R3e` of Flows.jl with constant steps. Both
-are dependencies, not registered: develop them in the environment. A batch of `B` fields is one complex array, and every
-operation acts on all its fields at once: the derivatives and the
-products are kernels of KernelAbstractions.jl, the transforms of the nonlinear
-term are plans over the first two dimensions, batched over the others.
+The equation, its terms and their names are those of OpenKolmogorovFlow.jl
+(OKF). The time stepping is that of Flows.jl, the IMEX Runge–Kutta scheme
+`CB3R2R3e` with constant steps. OKF, Flows, MultipleShooting and NKRoots are
+dependencies that are not registered: develop them in the environment.
 
 ## The state
 
-A batch is a complex array `X` of size `(2m+2, m+2, B)`. Slice `X[:, :, i]` is
-the data of an `FTField{n, m}` of OKF, `parent(Ω)`: the signed wavenumber `k`
-along `y` down the rows in FFT order, `j ≥ 0` along `x` across the columns.
-`FTField(X[:, :, i], n)` is that field in OKF. `n` is the largest active
-wavenumber and `2m+2` the number of grid points along each direction; the
-campaigns use `n = 33`, `m = 49`.
+A field is real and periodic on `[0, 2π)²`, with the Fourier coefficients
 
-The code is generic over the array type. With `array=CuArray` (CUDA loaded by
-the user, not a dependency of the package) the batches live on the GPU and
-cuFFT does the transforms; nothing indexes scalars. An extension then runs the
-inverse transform without the copy that the `mul!` of cuFFT makes of its input.
+    ω(x, y) = Σⱼ Σₖ Ω[j, k] exp(i (j x + k y)),   j, k = -n, …, n.
 
-Inside, the time stepper acts on compact batches of the active modes alone, a
-complex array `(n+1, 2n+1, B)` with `j` down the rows and `k = 0, …, n, -n, …, -1`
-across the columns, 45% of the stored entries. The real-to-complex transforms of
-cuFFT halve the first dimension of the region, so `x` runs along the first
-dimension of the compact batches and of the transforms. `propagate!`, `tangent!`
-and `rhs!` convert from the fields and back at their ends, which is the
-projection onto the fields and one transposition.
+Only the coefficients with `j ≥ 0` are kept, the others being their conjugates.
+A batch of `B` fields is an `FTFields{n}`, an array `X` of size
+`(n+1, 2n+1, B)`. Field `b` is `X[:, :, b]`, with `j = 0, …, n` along `x` down
+the rows and `k` along `y` across the columns, in the order
+`0, 1, …, n, -n, …, -1`. Two conditions make such a slice a field: in the row
+`j = 0` the entries at `k` and `-k` are conjugates, and the mean is zero.
+`apply_symmetry!` imposes them.
 
-A stage of `propagate!` is two kernels and two transforms. The kernel in Fourier
-space takes the transforms of the products, makes the explicit term, updates the
-state, solves the implicit stage and writes the velocity into the input of the
-inverse transforms. The kernel in physical space makes the products. The time of
-a few fields is the time to launch the kernels, and of many the memory they read
-and write, so both ends gain from having two kernels and few arrays. `tangent!`
-uses the same terms in the step of Flows.
+This is the `FTField{n, m}` of OKF without the modes that it keeps at zero, and
+transposed. `FTFields(Ωs)` makes a batch from a vector of fields of OKF, and
+`FTField(X, b, m)` gives one back. `FTFields(data)` wraps an array of
+coefficients, and `parent(X)` returns it. A batch holds its wavenumbers, `X.j`
+and `X.k`, computed once, as arrays that broadcast against it.
+
+On the grid a batch is a `Fields{m}`, a real array `(2m+2, 2m+2, B)` with `x`
+down the rows and `y` across the columns, the `Field{m}` of OKF transposed.
+
+The code is generic over the array of a batch. Every operation is a broadcast
+or a transform over its first two dimensions. With `array=CuArray` (CUDA
+loaded by the user, not a dependency of the package) the batches live on the
+GPU and cuFFT does the transforms.
+
+## The files
+
+| file | what it holds |
+|---|---|
+| `ftfields.jl` | `FTFields`, a batch in Fourier space, with its wavenumbers, `apply_symmetry!`, the inner product, the passage from and to OKF |
+| `fields.jl` | `Fields`, a batch on the grid |
+| `operators.jl` | `ddx!`, `ddy!`, `laplacian!`, `invlaplacian!` on batches |
+| `fft.jl` | `InverseFFT!` and `ForwardFFT!`, between the two |
+| `implicit.jl` | `ImplicitTerm`, the viscous term |
+| `nonlinear.jl` | `ExplicitTerm`, advection and forcing |
+| `linearised.jl` | `TangentTerm`, the linearised advection, and `ForcedTangentTerm` |
+| `adjoint.jl` | `AdjointTerm`, the transpose of the linearised advection |
+| `propagator.jl` | `KolmogorovPropagator`, the methods of MultipleShooting and `adjoint!` |
+
+The advection is written in the form of Basdevant (1983),
+`(∂²/∂x² - ∂²/∂y²)(u v) + ∂²/∂x∂y (v² - u²)`, which needs the velocity alone on
+the grid. The grid has `2m+2` points along each direction, at least `3n + 1`,
+so that the products have no aliasing on the modes kept.
 
 ## Interface
 
 ```julia
 using KolmogorovShootingGPU
 
-P = KolmogorovPropagator(n, m, Re, kf; dt=0.01, batch=N, array=Array)
+P = KolmogorovPropagator(n, m, Re, kf; dt=0.01, array=Array)
+Q = KolmogorovPropagator(P, Re₂)
 ```
 
-One constructor. The work arrays and the plans of batches of `batch` fields
-are built at once, those of any other size at its first use and kept, one set
-per size (`P.cache`): the Newton operator integrates `N` fields, the coarse
-preconditioner `N k` at once.
+The storage of the batches of `B` fields, the terms with their plans and
+arrays and the registers of the scheme, lives in the propagator. It is built
+once, at the first call with `B` fields, and every later call with `B` fields
+only looks it up, so that a call allocates no batch, but for the stages that
+`stages` returns. It is kept by batch size
+because MultipleShooting calls the propagator with batches of different sizes,
+the seeds and the directions. What `adjoint!` adds, its term and its
+registers, is built at its own first call, so that a search that never calls
+it holds none of it. The second form is the propagator at another
+Reynolds number. It shares all of it with `P` and costs nothing. The two must
+not run at the same time.
 
 | function | what it does |
 |---|---|
-| `propagate!(P, X, τ)` | advances every field of `X` in place by `τ`, `floor(τ/dt)` steps of `dt` and a last shorter step that ends on `τ`, as `Flows.TimeStepConstant`; returns `X` |
-| `tangent!(P, X, V, τ)` | advances the fields `X` and the perturbations `V` together, `V` by the tangent equation of OKF (`LinearisedEquation(TangentMode())`) coupled to the equation, with the same scheme and steps: the exact derivative of the discrete flow map; returns `V` |
-| `rhs!(P, out, X)` | the time derivative at every field, as the call of OKF's `ForwardEquation` |
-| `shift!(P, X, s, ℓy=0)` | `ω(x, y) → ω(x + s, y + ℓy)` for every field of `X`, the coefficients times `cis(j s + k ℓy)`; OKF's `xshift!` for `ℓy = 0`. `X` may be a view, of one field or of a batch |
-| `dshift!(P, out, X)` | the generator of the shift along `x`, `im j X`, as OKF's `ddx!` |
-| `realdot(X, Y)` | the inner product of OKF (`dot` of `FTField`s), summed over the fields, one reduction |
+| `propagate!(P, X, τ)` | advances every field of `X` in place by `τ`, in steps of `dt` and a last shorter step that ends on `τ` |
+| `tangent!(P, X, V, τ)` | advances the fields `X` and the perturbations `V` together, `V` by the tangent equation, with the same scheme and steps: the derivative of the discrete flow |
+| `forced!(P, X, V, τ)` | as `tangent!`, with the tangent equation forced by the derivative of the right-hand side in the Reynolds number, `-Δω/Re²` |
+| `rhs!(P, F, X)` | the time derivative of every field |
+| `shift!(P, X, s)` | `ω(x, y) → ω(x + s, y)` for every field, the coefficients times `cis(j s)` |
+| `dshift!(P, G, X, i)` | the generator of the shift, `∂ω/∂x` |
+| `stages(P, X, τ)` | the stages of every step of the flow over `τ` from the fields `X`, which are left as they are, kept for `adjoint!` |
+| `adjoint!(P, S, W)` | the transpose of `tangent!` applied to `W`, back over the stages `S` |
+| `realdots(X, Y)` | the inner products of the fields one by one, the mean of `ω₁ ω₂`, a real array `(1, 1, B)` |
+| `realdot(X, Y)` | their sum over the fields |
 
-`propagate!`, `tangent!` and `rhs!` take batches of three dimensions, views too.
-`shift!`, `dshift!` and `realdot` take views and any number of trailing batch
-dimensions. `shift!` is a method of OKF's `shift!`, so both packages can be
-loaded together.
+The first six are methods of the functions of MultipleShooting, and
+`adjoint!` is a method of `LinearAlgebra.adjoint!`, exported. Every function takes views
+of a batch, `view(X, :, :, b)`. `propagate!`, `tangent!`, `forced!`,
+`stages`, `adjoint!` and `rhs!` first give their input the symmetry of fields, by
+`apply_symmetry!`, so that the flow, its tangent and its adjoint vanish on what
+is not a field.
 
-`realdot` is the spatial mean of `ω₁ ω₂`: twice the modes `j ≥ 1`, which stand
-for their conjugates, once those of the column `j = 0`, and half the mean.
-`realdot(X, X)` is the mean of `ω²` summed over the fields, `Re` times OKF's
-`dissrate`. It counts all the stored modes, the same as OKF's `dot` for fields
-with zero inactive modes and zero mean, as those of the propagator.
+Field by field, `propagate!`, `tangent!`, `adjoint!` and `rhs!` give the
+results of OKF with Flows to rounding. `forced!` treats its forcing as an
+explicit term, so that it gives the derivative of the flow in the Reynolds
+number up to the error of the scheme.
 
-Field by field, `propagate!`, `tangent!` and `rhs!` reproduce OKF with Flows to
-round-off (`1e-13` relative over a few hundred steps in the tests), the
-implicit term exactly. The nonlinear term is written in the form of Basdevant
-(1983), `-(∂²/∂x² - ∂²/∂y²)(u v) - ∂²/∂x∂y (v² - u²)`, with two inverse and two
-forward transforms against the four and one of OKF. The two forms agree to
-round-off on a grid that dealiases the products, so `2m + 2 ≥ 3n + 1` is
-required. The tangent adds two and two transforms, and takes the velocity of
-the base from the term of the equation.
+## The adjoint
+
+`adjoint!` is the transpose of the derivative of the discrete flow in the inner
+product of the fields, `realdots`. For any batches `V` and `W`, field by field
+and to rounding,
+
+    realdots(tangent!(P, copy(X), V, τ), W) == realdots(V, adjoint!(P, stages(P, X, τ), W))
+
+It is the adjoint scheme of `CB3R2R3e` in Flows, with the explicit term
+`AdjointTerm`, stepped backwards over the stages of the steps of `propagate!`.
+`AdjointTerm` is `TangentTerm` read backwards, each step replaced by its
+transpose, the forward transform by the inverse one and the inverse by the
+forward one. It equals the adjoint of the linearised advection,
+
+    u ∂μ/∂x + v ∂μ/∂y + Δ⁻¹(∂μ/∂x ∂ω/∂y - ∂μ/∂y ∂ω/∂x),
+
+the `LinearisedExTerm` of OKF in its adjoint mode, to rounding.
+
+The adjoint needs the stages from the last step back, so that they are made
+first, once, and kept:
+
+```julia
+S = stages(P, X, τ)       # a forward pass from the fields X, every stage kept
+adjoint!(P, S, W)         # a backward pass over them, for this W
+adjoint!(P, S, W₂)        # and for any other, with no new forward pass
+```
+
+`S` holds the four stages of each of the `N` steps over `τ`, `4N` batches
+like `X`. For one field with `n = 33` and steps of 0.01 this is 14.6 GB over
+1000 time units, whatever the number of segments the orbit is cut into, and
+146 GB over 10⁴. `W` has as many fields as the batch that made `S`. For
+several adjoint fields about each field of `X`, call `adjoint!` once for each,
+over the same `S`.
+
+## With MultipleShooting
+
+```julia
+using MultipleShooting
+
+z = MultiVector(X, [T, s]; dots=realdots)      # X an FTFields, the seeds
+F = Residual(P)
+J = Jacobian(P, z)
+```
+
+The unknowns carry the inner product of the fields, so that the Krylov method,
+the phase conditions and the preconditioner all use it. For a search or a
+continuation with the Reynolds number free, the family of propagators is
+`Re -> KolmogorovPropagator(P, Re)`. The segments have equal lengths.
 
 ## Tests and examples
 
 ```
 julia --project=test test/runtests.jl
+DEVICE=gpu julia --project=test test/runtests.jl
 julia --project=examples examples/timing.jl cpu 10 1 4 16
 julia --project=<environment with CUDA> examples/timing.jl gpu 10 1 4 16 64 256 1024
 ```
 
 The tests compare every function with OKF and Flows on a small grid (`n = 8`,
-`m = 12`), slice by slice, for several batch sizes, and `tangent!` also with
-a centred difference of `propagate!`. `examples/timing.jl` times one
-`propagate!` and one `tangent!` of `B` fields over `τ = 10` at the resolution of
-the campaigns. `examples/orbits.jl` reads the orbits and the seeds of the
-campaigns (`nksearch-upos`, `orbits`, recurrences.jl) into batches of seeds. A
-state that must fill several segments is advanced by whole steps of `dt`, and
-each shooting point takes the rest of a step on a copy. A shorter step that the
-integration went on from would leave the trajectory of the simulation about
-`1e-9` off, and the recurrence would be lost by `T ≈ 150`.
+`m = 12`), field by field, for several batch sizes and on views. They check
+`tangent!` against a centred difference of `propagate!`, with its error
+falling as the square of the increment, `rhs!` against a short step of
+`propagate!`, `forced!` against a centred difference in the Reynolds number,
+and `adjoint!` and `AdjointTerm` against `tangent!` and `TangentTerm` by the
+identity of the transpose. They check that the flow commutes with the shift
+along `x`, the rotation by π and the shift-reflect, that the advection keeps
+the energy and the enstrophy, that the storage of a batch size is built once,
+and the methods of MultipleShooting on a product with its Jacobian. The files
+of `test/` hold them by topic.
 
-On one core of a laptop (M-series, FFTW), one field over `τ = 10` at `n = 33`
-takes about 0.5 s with `propagate!`, half the time of OKF, and 1.2 s with
-`tangent!`, and the cost grows linearly with `B`. The kernels run on the threads
-of Julia. On an H200 one field takes 0.11 s and a field in a batch of thousands
-2.7 ms, so the package is for the GPU.
+With `DEVICE=gpu` the batches are `CuArray`s. CUDA is a dependency neither of
+the package nor of the test environment: it is loaded from another environment
+of the load path, the global one by default.
+
+`examples/timing.jl` times one `propagate!` and one `tangent!` of `B` fields
+over `τ = 10` at the resolution of the campaigns, `n = 33` and `m = 49`.
+`examples/orbits.jl` reads the orbits and the seeds of the campaigns into
+batches of seeds. A state that must fill several segments is advanced by whole
+steps of `dt`, and each shooting point takes the rest of a step on a copy. A
+shorter step that the integration went on from would leave the trajectory of
+the simulation about `1e-9` off, and the recurrence would be lost by
+`T ≈ 150`. An orbit that closes after a translation along `y` is refused.

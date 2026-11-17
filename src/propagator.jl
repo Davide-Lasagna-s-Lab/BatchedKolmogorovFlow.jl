@@ -1,308 +1,297 @@
+# The propagator of Kolmogorov flow for MultipleShooting.jl: the methods of its interface on
+# batches of fields, all the fields of a batch advanced together by the IMEX Runge–Kutta scheme
+# CB3R2R3e of Flows.jl with constant steps, the viscous term implicit, and the transpose of its
+# tangent, the adjoint of the discrete flow.
+
 """
-    KolmogorovPropagator(n, m, Re, kf; dt=0.01, batch=1, array=Array)
+    KolmogorovPropagator(n, m, Re, kf; dt=0.01, array=Array)
+    KolmogorovPropagator(P, Re)
 
-Flow map of batches of vorticity fields of Kolmogorov flow, all the fields of
-a batch advanced together by the IMEX Runge–Kutta scheme `CB3R2R3e` of
-Flows.jl with constant steps `dt`.
+The flow of two-dimensional Kolmogorov flow on batches of vorticity fields, for the searches of
+MultipleShooting.jl: [`propagate!`](@ref), [`tangent!`](@ref), [`forced!`](@ref),
+[`rhs!`](@ref), [`shift!`](@ref) and [`dshift!`](@ref), and the transpose of the tangent,
+[`adjoint!`](@ref), over the stages kept by [`stages`](@ref). A batch is an [`FTFields`](@ref) on an array of type `array`, the Fourier
+coefficients of `B` fields. Field by field the results are those of OpenKolmogorovFlow with the
+same scheme and steps, to rounding.
 
-A batch is a complex array `X` of size `(2m+2, m+2, B)` and of type `array`
-(`Array`, or `CuArray` once CUDA is loaded). Slice `X[:, :, i]` is the data of
-an `FTField{n, m}` of OpenKolmogorovFlow: the signed wavenumber `k` along `y`
-down the rows, in FFT order, and `j ≥ 0` along `x` across the columns. Field by
-field, the results are those of `ForwardEquation(n, m, Re, kf)` with the same
-scheme and steps, to round-off. The propagator acts on the fields of
-OpenKolmogorovFlow alone: every batch it advances is first projected onto them,
-with zero inactive modes and zero mean and the column `j = 0` Hermitian, so that
-the flow map and its tangent vanish on the rest of the stored entries. Without
-the projection those entries would be carried unchanged, a neutral subspace of
-the tangent map that random perturbations fill.
+The storage of the batches of `B` fields, the terms with their plans and arrays and the registers
+of the scheme, lives in the propagator. It is built once, at the first call with `B` fields, and
+every later call with `B` fields only looks it up, so that a call allocates no batch, but for the
+stages that [`stages`](@ref) returns. What `adjoint!` adds, its term and its registers, is built
+at its own first call, so that a search that never calls it holds none of it.
 
-`n` is the largest active wavenumber and `2m+2` the number of grid points along
-each direction, at least `3n + 1`, which dealiases the products. The work arrays and the
-FFT plans of batches of `batch` fields are built at once; those of any other
-batch size at its first use, and kept.
+The second form is the propagator of `P` at another Reynolds number. It shares the terms, the
+plans and the storage of `P`, and costs nothing, so that `Re -> KolmogorovPropagator(P, Re)` is
+the family of propagators that the searches with a free parameter of MultipleShooting.jl take.
+Two propagators that share their storage must not run at the same time.
 
-See [`propagate!`](@ref), [`tangent!`](@ref), [`rhs!`](@ref),
-[`shift!`](@ref), [`dshift!`](@ref) and [`realdot`](@ref).
+# Arguments
+- `n::Int`: the largest wavenumber of the fields.
+- `m::Int`: the grid of the products has `2m+2` points along each direction, at least `3n + 1`,
+  which keeps them free of aliasing.
+- `Re::Real`: the Reynolds number.
+- `kf::Int`: the wavenumber of the forcing, from 1 to `n`.
+- `dt::Real=0.01`: the time step. A time that is not a whole number of steps ends with a shorter
+  one.
+- `array::Type=Array`: the type of the batches, `Array`, or `CuArray` once CUDA is loaded.
 """
-struct KolmogorovPropagator{C<:AbstractArray, R<:AbstractMatrix{Float64}, L}
-           n::Int              # largest active wavenumber
-           m::Int              # storage cutoff, 2m+2 grid points
-          kf::Int              # forcing wavenumber
-          dt::Float64          # constant time step
-    template::C                # empty array of the device and element type of the batches
-    implicit::L                # viscous term, shared by all batch sizes
-          jx::R                # wavenumbers j along x, as a row (1, m+2)
-          ky::R                # signed wavenumbers k along y, as a column (2m+2, 1)
-       cache::Dict{Any, Any}   # explicit terms and flows of each batch size
+struct KolmogorovPropagator{A<:AbstractArray}
+           n::Int            # the largest wavenumber of the fields
+           m::Int            # the grid has 2m+2 points along each direction
+          Re::Float64        # the Reynolds number
+          kf::Int            # the wavenumber of the forcing
+          dt::Float64        # the time step
+    template::A              # an empty array of the type of the batches
+       cache::Dict{Int, Any} # the storage of the batches of B fields, under the key B, built at
+                             # the first call with B fields and looked up by the later ones,
+                             # shared with the propagators at other Reynolds numbers
+    adjoints::Dict{Int, Any} # what adjoint! adds to it, under the key B, built at its first call
+                             # with B fields, shared in the same way
 
     function KolmogorovPropagator(n::Int,
                                   m::Int,
                                  Re::Real,
                                  kf::Int;
                                  dt::Real=0.01,
-                              batch::Int=1,
                               array::Type=Array)
         # ---- input checks ----
         2m + 2 >= 3n + 1 ||
-            throw(ArgumentError("the grid must dealias products, 2m + 2 at least 3n + 1"))
+            throw(ArgumentError("the grid must dealias the products, 2m + 2 at least 3n + 1"))
         1 <= kf <= n ||
             throw(ArgumentError("the forcing wavenumber must be in 1:n"))
 
-        # ---- template of the batches and wavenumbers for the shift ----
+        # ---- an empty array of the type of the batches, from which their storage is made ----
         template = array{ComplexF64}(undef, 0, 0, 0)
-        jx       = _device(template, reshape(Float64.(_js(m)), 1, :))
-        ky       = _device(template, reshape(Float64.(_ks(m)), :, 1))
 
-        # ---- assemble, with the flow of the first batch size ----
-        implicit = ImplicitTerm(template, n, Re)
-        P = new{typeof(template), typeof(jx), typeof(implicit)}(n,
-                                                                m,
-                                                                kf,
-                                                                Float64(dt),
-                                                                template,
-                                                                implicit,
-                                                                jx,
-                                                                ky,
-                                                                Dict{Any, Any}())
-        _forward(P, batch)
-        return P
+        return new{typeof(template)}(n,
+                                     m,
+                                     Float64(Re),
+                                     kf,
+                                     Float64(dt),
+                                     template,
+                                     Dict{Int, Any}(),
+                                     Dict{Int, Any}())
     end
+
+    # the propagator of P at another Reynolds number, with its terms and its storage, shared
+    KolmogorovPropagator(P::KolmogorovPropagator{A}, Re::Real) where {A} =
+        new{A}(P.n,
+               P.m,
+               Float64(Re),
+               P.kf,
+               P.dt,
+               P.template,
+               P.cache,
+               P.adjoints)
 end
 
-# the explicit term and the flow of the batches of size B, built at their first use, with a compact
-# batch for the state; rhs! writes the time derivative into a register that step! leaves free
-function _forward(P::KolmogorovPropagator, B::Int)
+# The storage of the batches of B fields. It lives in the propagator, in P.cache under the key B:
+# it is built once, at the first call with B fields, and every later call with B fields only
+# looks it up. It is kept by batch size because MultipleShooting calls the propagator with
+# batches of different sizes, the seeds and the directions, not known when the propagator is
+# made.
+function _storage(P::KolmogorovPropagator, B::Int)
     return get!(P.cache, B) do
-        explicit = ExplicitTerm(P.template, P.n, P.m, P.kf, B)
-        state    = similar(P.template, ComplexF64, (P.n + 1, 2P.n + 1, B))
-        ϕ        = Flows.flow(explicit,
-                              P.implicit,
-                              Flows.CB3R2R3e(state),
-                              Flows.TimeStepConstant(P.dt))
-        (; explicit, ϕ, state, work=ϕ.meth.store[1])
+        # ---- the batches that the flows advance, on the device of the propagator ----
+        X = FTFields(similar(P.template, ComplexF64, (P.n + 1, 2P.n + 1, B)))
+        V = similar(X)
+
+        (X        = X,                                  # the fields
+         V        = V,                                  # the perturbations, or the adjoint fields
+         explicit = ExplicitTerm(X, P.m, P.kf),         # the explicit term of the equation
+         tangent  = TangentTerm(X, P.m),                # and of its tangent
+         single   = Flows.CB3R2R3e(X),                  # the registers of the scheme, for the equation
+         coupled  = Flows.CB3R2R3e(Flows.couple(X, V))) # and for the equation with its tangent
     end
 end
 
-# the compact batch Y of the fields X, a projection onto the fields of OKF: the inactive modes and
-# the mean dropped, and the Hermitian part of the column j = 0 kept. The identity on fields of OKF.
-# E.ŵ is the scratch of the transposition
-function _compress!(P::KolmogorovPropagator, Y::AbstractArray, X::AbstractArray, E::ExplicitTerm)
-    # ---- the columns of k ≥ 0 and of k < 0, in the compact batch and in the transposed fields ----
-    n  = P.n
-    c⁺ = 1:(n + 1)
-    c⁻ = (n + 2):(2n + 1)
+# What adjoint! adds to the storage of the batches of B fields, in P.adjoints under the key B. It
+# is built once, at the first call of adjoint! with B fields, and not with the rest, so that a
+# search that never calls adjoint! holds none of it.
+function _adjoint_storage(P::KolmogorovPropagator, B::Int)
+    return get!(P.adjoints, B) do
+        # ---- a batch of the storage, for the size and the device of the others ----
+        X = _storage(P, B).X
 
-    Xt = view(E.ŵ, :, :, :, 1)
-    permutedims!(Xt, X, (2, 1, 3))
-    view(Y, :, c⁺, :) .= view(Xt, c⁺, c⁺, :)
-    view(Y, :, c⁻, :) .= view(Xt, c⁺, c⁻ .+ E.gap, :)
-    view(Y, 1, 1, :)  .= 0
-
-    return _hermitian!(Y, n)
-end
-
-# the fields X of the compact batch Y, with zero inactive modes
-function _expand!(P::KolmogorovPropagator, X::AbstractArray, Y::AbstractArray, E::ExplicitTerm)
-    n  = P.n
-    c⁺ = 1:(n + 1)
-    c⁻ = (n + 2):(2n + 1)
-
-    Xt = view(E.ŵ, :, :, :, 1)
-    Xt .= 0
-    view(Xt, c⁺, c⁺, :)         .= view(Y, :, c⁺, :)
-    view(Xt, c⁺, c⁻ .+ E.gap, :) .= view(Y, :, c⁻, :)
-    permutedims!(X, Xt, (2, 1, 3))
-
-    return X
-end
-
-# the flow of the equation coupled to its tangent, for batches of size B
-function _tangent(P::KolmogorovPropagator, B::Int)
-    return get!(P.cache, (:tangent, B)) do
-        forward = ExplicitTerm(P.template, P.n, P.m, P.kf, B)
-        tangent = ExplicitTerm(P.template, P.n, P.m, P.kf, B; base=forward)
-        state   = similar(P.template, ComplexF64, (P.n + 1, 2P.n + 1, B))
-        tstate  = similar(state)
-        ϕ       = Flows.flow(Flows.couple(forward, tangent),
-                             Flows.couple(P.implicit, P.implicit),
-                             Flows.CB3R2R3e(Flows.couple(state, tstate)),
-                             Flows.TimeStepConstant(P.dt))
-        (; explicit=forward, ϕ, state, tstate)
+        (term   = AdjointTerm(X, P.m),                          # the explicit term of the adjoint
+         scheme = Flows.CB3R2R3e(X, Flows.DiscreteMode(true)))  # the registers of the scheme, for the adjoint
     end
 end
 
-# All the work in Fourier space between two pairs of transforms, one read and one write per entry of
-# each array. With the explicit term N of the stage before, its update of x and the state of this
-# stage are, as in `step!` of Flows,
-#
-#     x ← x + βᴵ z + βᴱ N,     y = x + αᴵ z + αᴱ N,
-#
-# and then z = (I - γ A)⁻¹ A y, and the velocity of y + γ z goes into F̂ for the next explicit
-# term. The registers y and w of Flows are not needed. The first stage has no stage before it, the
-# last call has no stage after it.
-@kernel function _stage_kernel!(x, z, ŵ, F̂, lap, a, b, c, d, C)
-    j, k, i = @index(Global, NTuple)
-    @inbounds begin
-        Y = x[j, k, i]
-        Z = z[j, k, i]
+# the fields X and the vectors V advanced by τ, the vectors by the tangent equation with the
+# explicit term `linearised`
+function _advance!(P::KolmogorovPropagator, X::FTFields, V::FTFields, τ::Real, linearised)
+    storage = _storage(P, size(X, 3))
+    L       = ImplicitTerm(P.Re)
 
-        # ---- the end of the stage before, and the state of this one ----
-        if !C.first
-            N = _nonlinear(ŵ, c, d, j, k, i, C.n, C.gap, C.kf, C.f)
-            X = Y + C.βᴵ*Z + C.βᴱ*N
-            Y = X + C.αᴵ*Z + C.αᴱ*N
-            x[j, k, i] = X
-        end
+    # ---- the flow of the equation coupled to its tangent, at the Reynolds number of P ----
+    ϕ = Flows.flow(Flows.couple(storage.explicit, linearised),
+                   Flows.couple(L, L),
+                   storage.coupled,
+                   Flows.TimeStepConstant(P.dt))
 
-        # ---- this stage: the implicit solve, and the velocity for the explicit term ----
-        if !C.last
-            L = C.ν*lap[j, k]
-            Z = Y*L/(1 - C.γ*L)
-            W = Y + C.γ*Z
-            K = _column(k, C.n, C.gap)
-            z[j, k, i]    = Z
-            F̂[j, K, i, 1] = im*a[j, k]*W
-            F̂[j, K, i, 2] = im*b[j, k]*W
-        end
-    end
-end
+    # ---- the fields and the vectors in the storage of the flow, with the symmetry of fields ----
+    apply_symmetry!(copyto!(storage.X, X))
+    apply_symmetry!(copyto!(storage.V, V))
 
-# the coefficients of the call s of the kernel, from 1, before the first stage, to 5, after the last
-function _coefficients(E::ExplicitTerm, L::ImplicitTerm, s::Int, Δt::Real)
-    tab    = Flows.CB3e
-    first  = s == 1
-    last   = s == 5
-    βᴵ     = first ? 0.0 : tab[:bᴵ, s - 1]*Δt
-    βᴱ     = first ? 0.0 : tab[:bᴱ, s - 1]*Δt
-    αᴵ     = first || last ? 0.0 : (tab[:aᴵ, s, s - 1] - tab[:bᴵ, s - 1])*Δt
-    αᴱ     = first || last ? 0.0 : (tab[:aᴱ, s, s - 1] - tab[:bᴱ, s - 1])*Δt
-    γ      = last ? 0.0 : tab[:aᴵ, s, s]*Δt
+    # ---- advanced together, and back ----
+    ϕ(Flows.couple(storage.X, storage.V), (0, τ))
+    copyto!(X, storage.X)
 
-    return (; first,
-              last,
-              βᴵ,
-              βᴱ,
-              αᴵ,
-              αᴱ,
-              γ,
-              ν=1/L.Re,
-              n=E.n,
-              gap=E.gap,
-              kf=E.kf,
-              f=E.kf/2)
-end
-
-# One step of CB3R2R3e, as `step!` of Flows, on compact batches: at each stage one kernel in Fourier
-# space, the inverse transforms, one kernel in physical space and the forward transforms
-function Flows.step!(method::Flows.CB3R2R3e{X, Flows.NormalMode},
-                        sys::Flows.System{1, D, <:ExplicitTerm, <:ImplicitTerm},
-                          t::Real,
-                         Δt::Real,
-                          x::X,
-                           ::Nothing) where {X, D}
-    E       = sys.g
-    L       = sys.A
-    z       = method.store[2]
-    stage!  = _stage_kernel!(get_backend(x))
-    ndrange = size(x)
-
-    for s in 1:4
-        _zero!(E.F̂)
-        stage!(x, z, E.ŵ, E.F̂, L.lap, E.a, E.b, E.c, E.d, _coefficients(E, L, s, Δt); ndrange)
-        _inverse!(E.f, E.ifft, E.F̂)
-        _products!(E)
-    end
-    stage!(x, z, E.ŵ, E.F̂, L.lap, E.a, E.b, E.c, E.d, _coefficients(E, L, 5, Δt); ndrange)
-
-    return nothing
+    return copyto!(V, storage.V)
 end
 
 """
     propagate!(P::KolmogorovPropagator, X, τ) -> X
 
-Advance in place every field of the batch `X` by the time `τ`, all together:
-`floor(τ/dt)` steps of `dt` and a last shorter step that ends on `τ`, as
-`Flows.TimeStepConstant` (a last step shorter than `10⁻⁶ dt` is merged into
-the one before).
+Advance in place every field of the batch `X` by the time `τ`, all together. The batch is first
+given the symmetry of fields, by `apply_symmetry!`. `X` may be a view of a batch.
 """
-function propagate!(P::KolmogorovPropagator, X::AbstractArray{ComplexF64, 3}, τ::Real)
-    w = _forward(P, size(X, 3))
-    w.ϕ(_compress!(P, w.state, X, w.explicit), (0, τ))
-    return _expand!(P, X, w.state, w.explicit)
+function propagate!(P::KolmogorovPropagator, X::FTFields, τ::Real)
+    storage = _storage(P, size(X, 3))
+
+    # ---- the flow of the equation, at the Reynolds number of P ----
+    ϕ = Flows.flow(storage.explicit,
+                   ImplicitTerm(P.Re),
+                   storage.single,
+                   Flows.TimeStepConstant(P.dt))
+
+    # ---- the fields in the storage of the flow, with the symmetry of fields ----
+    apply_symmetry!(copyto!(storage.X, X))
+
+    # ---- advanced, and back ----
+    ϕ(storage.X, (0, τ))
+
+    return copyto!(X, storage.X)
 end
 
 """
     tangent!(P::KolmogorovPropagator, X, V, τ) -> V
 
-Advance in place by `τ` the fields `X` and the perturbations `V` together,
-`V[:, :, i]` by the tangent equation about `X[:, :, i]`: OKF's
-`LinearisedEquation(TangentMode())` coupled to the equation, with the same
-scheme and steps, so that `V` becomes the derivative of the discrete flow map
-applied to `V`. `X` and `V` have the same size, the batch of the bases repeated
-when several perturbations share a base.
+Advance in place by `τ` the fields `X` and the perturbations `V` together, each perturbation by
+the tangent equation about the field in the same place, with the scheme and the steps of
+[`propagate!`](@ref), so that `V` becomes the derivative of the discrete flow applied to `V`.
 """
-function tangent!(P::KolmogorovPropagator, X::AbstractArray{ComplexF64, 3},
-                                           V::AbstractArray{ComplexF64, 3}, τ::Real)
-    w = _tangent(P, size(X, 3))
-    _compress!(P, w.state, X, w.explicit)
-    _compress!(P, w.tstate, V, w.explicit)
-    w.ϕ(Flows.couple(w.state, w.tstate), (0, τ))
-    _expand!(P, X, w.state, w.explicit)
-    return _expand!(P, V, w.tstate, w.explicit)
+tangent!(P::KolmogorovPropagator, X::FTFields, V::FTFields, τ::Real) =
+    _advance!(P, X, V, τ, _storage(P, size(X, 3)).tangent)
+
+"""
+    forced!(P::KolmogorovPropagator, X, V, τ) -> V
+
+As [`tangent!`](@ref), with the tangent equation forced by the derivative of the right-hand side
+in the Reynolds number, `-Δω/Re²`. From `V = 0` it gives the derivative of the end points in the
+Reynolds number, the column of the parameter of MultipleShooting.jl. The scheme treats the
+forcing as an explicit term, so that this is the derivative of the flow up to the error of the
+scheme, not that of the discrete flow to rounding.
+"""
+forced!(P::KolmogorovPropagator, X::FTFields, V::FTFields, τ::Real) =
+    _advance!(P, X, V, τ, ForcedTangentTerm(_storage(P, size(X, 3)).tangent, P.Re))
+
+"""
+    stages(P::KolmogorovPropagator, X, τ) -> S
+
+The stages of every step of the flow over `τ` from the fields `X`, kept for [`adjoint!`](@ref),
+which goes back over them. `X` holds the fields at the start of the interval and is left as it
+is. The steps are those of [`propagate!`](@ref). The stages are made once and serve any number of
+calls of `adjoint!`, with the propagator that made them.
+
+`S` holds the four stages of each of the `N` steps over `τ`, `4N` batches like `X`, in the
+stage cache of Flows.jl. For one field with `n = 33` and steps of 0.01 this is 14.6 GB over 1000
+time units, whatever the number of segments the orbit is cut into.
+"""
+function stages(P::KolmogorovPropagator, X::FTFields, τ::Real)
+    storage = _storage(P, size(X, 3))
+
+    # ---- the flow of the equation, at the Reynolds number of P ----
+    ϕ = Flows.flow(storage.explicit,
+                   ImplicitTerm(P.Re),
+                   storage.single,
+                   Flows.TimeStepConstant(P.dt))
+
+    # ---- the fields in the storage of the flow, with the symmetry of fields ----
+    apply_symmetry!(copyto!(storage.X, X))
+
+    # ---- advanced, the stages of every step kept, in copies that Flows.jl makes ----
+    S = Flows.RAMStageCache(4, storage.X)
+    ϕ(storage.X, (0, τ), S)
+
+    return S
 end
 
 """
-    rhs!(P::KolmogorovPropagator, out, X) -> out
+    adjoint!(P::KolmogorovPropagator, S, W) -> W
 
-Time derivative of every field of the batch `X`: viscous term, advection and
-forcing, as the call of OKF's `ForwardEquation`. `out` is overwritten.
+The transpose of [`tangent!`](@ref) in the inner product of the fields, [`realdots`](@ref), over
+the stages `S` of [`stages`](@ref): `W` becomes the transpose of the derivative of the discrete
+flow, over the interval and from the fields of `S`, applied to `W`. For any batches `V` and `W`,
+field by field and to rounding,
+
+    realdots(tangent!(P, copy(X), V, τ), W) == realdots(V, adjoint!(P, stages(P, X, τ), W))
+
+The adjoint scheme runs backwards over `S`, from the last step to the first, and leaves `S` as
+it is, so that one forward pass serves every `W`: a call costs one backward pass. `W` has as many
+fields as the batch that made `S`, each about the field in the same place, and is first given the
+symmetry of fields, as `tangent!` gives it to its input, so that the transpose includes that
+projection. `W` may be a view of a batch. This is a method of `LinearAlgebra.adjoint!`.
 """
-function rhs!(P::KolmogorovPropagator, out::AbstractArray, X::AbstractArray)
-    w = _forward(P, size(X, 3))
-    Y = _compress!(P, w.state, X, w.explicit)
-    D = w.explicit(0.0, Y, w.work)
-    D .+= Y .* P.implicit.lap .* (1/P.implicit.Re)
-    return _expand!(P, out, D, w.explicit)
+function LinearAlgebra.adjoint!(P::KolmogorovPropagator, S::Flows.RAMStageCache, W::FTFields)
+    storage = _storage(P, size(W, 3))
+    back    = _adjoint_storage(P, size(W, 3))
+
+    # ---- the flow of the adjoint equation back over the stages, at the Reynolds number of P ----
+    ψ = Flows.flow(back.term,
+                   ImplicitTerm(P.Re),
+                   back.scheme,
+                   Flows.TimeStepFromCache())
+
+    # ---- the adjoint fields in the storage of the flow, with the symmetry of fields ----
+    apply_symmetry!(copyto!(storage.V, W))
+
+    # ---- back over the stages, from the last step to the first ----
+    ψ(storage.V, S)
+
+    return copyto!(W, storage.V)
 end
 
 """
-    shift!(P::KolmogorovPropagator, X, s, ℓy=0) -> X
+    rhs!(P::KolmogorovPropagator, F, X) -> F
 
-Shift every field of `X` in place, `ω(x, y) → ω(x + s, y + ℓy)`: the
-coefficients are multiplied by `cis(j s + k ℓy)`. With `ℓy = 0` this is OKF's
-`xshift!(Ω, s)`. `X` may be a view, of one field or of a batch, with any number
-of trailing batch dimensions. A method of OKF's `shift!`.
+The time derivative of every field of the batch `X`, advection, forcing and viscous term, written
+into `F`.
 """
-shift!(P::KolmogorovPropagator, X::AbstractArray, s::Real, ℓy::Real=0) =
-    (X .*= cis.(s .* P.jx .+ ℓy .* P.ky); X)
+function rhs!(P::KolmogorovPropagator, F::FTFields, X::FTFields)
+    storage = _storage(P, size(X, 3))
+
+    # ---- the fields in the storage of the propagator, with the symmetry of fields ----
+    Ω = apply_symmetry!(copyto!(storage.X, X))
+
+    # ---- advection and forcing ----
+    storage.explicit(0.0, Ω, storage.V)
+
+    # ---- plus the viscous term, Δω/Re ----
+    storage.V .-= (Ω.j.^2 .+ Ω.k.^2) .* Ω ./ P.Re
+
+    return copyto!(F, storage.V)
+end
 
 """
-    dshift!(P::KolmogorovPropagator, out, X) -> out
+    shift!(P::KolmogorovPropagator, X, s) -> X
 
-The generator of the shift along `x`, `∂ω/∂x = im j X`, for every field of `X`,
-as OKF's `ddx!`. `X` may have any number of trailing batch dimensions.
+Shift in place every field of the batch `X` along x, `ω(x, y) → ω(x + s, y)`, the coefficients
+times `cis(j s)`. `s` is the shift, or the vector of the shifts of MultipleShooting.jl, which
+holds this one alone.
 """
-dshift!(P::KolmogorovPropagator, out::AbstractArray, X::AbstractArray) =
-    (out .= (im .* P.jx) .* X; out)
+function shift!(P::KolmogorovPropagator, X::FTFields, s)
+    # ---- e^{i j (x + s)} is e^{i j s} times e^{i j x} ----
+    X .*= cis.(X.j .* first(s))
+
+    return X
+end
 
 """
-    realdot(X, Y) -> Float64
+    dshift!(P::KolmogorovPropagator, G, X, i=1) -> G
 
-The inner product of OKF, `dot` of two `FTField`s, summed over the fields of
-the batches `X` and `Y`: twice the modes `j ≥ 1`, which stand for their
-conjugates, once those of the column `j = 0`, and half the mean. It is the
-spatial mean of `ω₁ ω₂` (`realdot(X, X)` is the mean of `ω²` summed over the
-fields, `Re` times the dissipation rate of OKF's `dissrate`). It counts all the
-stored modes, equal to OKF's `dot` for fields with zero inactive modes, as
-those of the propagator. One reduction on the device of `X`.
+The generator of the shift along x at every field of the batch `X`, `∂ω/∂x`, written into `G`.
+`i` is the index of the shift, as MultipleShooting.jl passes it.
 """
-realdot(X::AbstractArray, Y::AbstractArray) =
-    sum(Broadcast.instantiate(Broadcast.broadcasted(_realdot,
-                                                    X,
-                                                    Y,
-                                                    reshape(1:size(X, 1), :, 1),
-                                                    reshape(1:size(X, 2), 1, :))))
-
-# the term of row r and column c of realdot
-_realdot(x, y, r::Int, c::Int) = ifelse(c == 1, ifelse(r == 1, 0.5, 1.0), 2.0) * real(conj(x) * y)
+dshift!(P::KolmogorovPropagator, G::FTFields, X::FTFields, i::Int=1) = ddx!(G, X)
