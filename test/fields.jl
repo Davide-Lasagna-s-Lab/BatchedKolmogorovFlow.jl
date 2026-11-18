@@ -16,8 +16,12 @@
     @test all(parent(OKF.FTField(X, i, m)) == parent(Ωs[i]) for i in 1:3)
     @test_throws ArgumentError FTFields(zeros(ComplexF64, 4, 8, 2))
 
-    # ---- a batch like it, a copy, a view of some fields, and a broadcast into it ----
+    # ---- a batch like it, of more fields, a copy, a view of some fields, and a broadcast into it ----
     @test similar(X) isa FTFields{n}
+    @test similar(X, ComplexF64, (n + 1, 2n + 1, 7)) isa FTFields{n}
+    @test size(similar(X, ComplexF64, (n + 1, 2n + 1, 7))) == (n + 1, 2n + 1, 7)
+    @test !(similar(X, ComplexF64, (n + 3, 2n + 1, 7)) isa FTFields)
+    @test !(similar(X, Float64, (n + 1, 2n + 1, 7)) isa FTFields)
     @test cpu(copy(X)) == cpu(X) && parent(copy(X)) !== parent(X)
     @test view(X, :, :, 2:3) isa FTFields{n}
     @test cpu(view(X, :, :, 2:3)) == cpu(X)[:, :, 2:3]

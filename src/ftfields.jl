@@ -115,8 +115,16 @@ Base.@propagate_inbounds Base.setindex!(X::FTFields, a, I::Vararg{Int, 3}) = (X.
 Base.similar(X::FTFields) = FTFields(similar(X.data), X)
 Base.copy(X::FTFields)    = FTFields(copy(X.data), X)
 
-# an array of another type or size on the device of X, as the fields on the grid
-Base.similar(X::FTFields, ::Type{T}, dims::Dims) where {T} = similar(X.data, T, dims)
+# an array of another type or size on the device of X, as the fields on the grid; or, when the
+# type and the first two sizes are those of a batch, a batch of fields like those of X with the
+# wavenumbers of X, as MultipleShooting makes for the k directions of a subspace step packed
+# together
+function Base.similar(X::FTFields{n}, ::Type{T}, dims::Dims) where {n, T}
+    batch = T === ComplexF64 && length(dims) == 3 && dims[1:2] == (n + 1, 2n + 1)
+    batch && return FTFields(similar(X.data, T, dims), X)
+
+    return similar(X.data, T, dims)
+end
 
 # the fields b of a batch, as a batch that shares its coefficients. `selectdim`, by which
 # MultipleShooting takes the first and the last seed, passes slices for the colons
