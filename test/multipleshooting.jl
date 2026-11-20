@@ -67,7 +67,7 @@ end
 
     # ---- the bases of the subspace iteration are fields, orthonormal in the inner product ----
     Random.seed!(1)
-    S = Subspace(P, z; k=2)
+    S = Subspace(P, z; k′=2)
     iterate!(S)
     @test all(all(dots(S.V[a], S.V[a]) .≈ 1) for a in 1:2)
     @test maximum(abs, dots(S.V[1], S.V[2])) < 1e-12

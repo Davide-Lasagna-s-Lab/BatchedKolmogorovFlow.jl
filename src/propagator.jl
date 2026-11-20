@@ -8,17 +8,18 @@
     KolmogorovPropagator(P, Re)
 
 The flow of two-dimensional Kolmogorov flow on batches of vorticity fields, for the searches of
-MultipleShooting.jl: [`propagate!`](@ref), [`tangent!`](@ref), [`forced!`](@ref),
-[`rhs!`](@ref), [`shift!`](@ref) and [`dshift!`](@ref), and the transpose of the tangent,
-[`adjoint!`](@ref), over the stages kept by [`stages`](@ref). A batch is an [`FTFields`](@ref) on an array of type `array`, the Fourier
+MultipleShooting.jl: [`propagate!`](@ref), [`tangent!`](@ref), [`tangents!`](@ref),
+[`forced!`](@ref), [`rhs!`](@ref), [`shift!`](@ref) and [`dshift!`](@ref), and the transpose of
+the tangent, [`adjoint!`](@ref), over the stages kept by [`stages`](@ref). A batch is an [`FTFields`](@ref) on an array of type `array`, the Fourier
 coefficients of `B` fields. Field by field the results are those of OpenKolmogorovFlow with the
 same scheme and steps, to rounding.
 
 The storage of the batches of `B` fields, the terms with their plans and arrays and the registers
 of the scheme, lives in the propagator. It is built once, at the first call with `B` fields, and
 every later call with `B` fields only looks it up, so that a call allocates no batch, but for the
-stages that [`stages`](@ref) returns. What `adjoint!` adds, its term and its registers, is built
-at its own first call, so that a search that never calls it holds none of it.
+stages that [`stages`](@ref) returns. What the tangent equation adds for `K` perturbations of `B`
+fields, and what `adjoint!` adds, are built at their own first calls, so that a search that never
+calls them holds none of it.
 
 The second form is the propagator of `P` at another Reynolds number. It shares the terms, the
 plans and the storage of `P`, and costs nothing, so that `Re -> KolmogorovPropagator(P, Re)` is
@@ -45,6 +46,8 @@ struct KolmogorovPropagator{A<:AbstractArray}
        cache::Dict{Int, Any} # the storage of the batches of B fields, under the key B, built at
                              # the first call with B fields and looked up by the later ones,
                              # shared with the propagators at other Reynolds numbers
+    tangents::Dict{Tuple{Int, Int}, Any} # what the tangent equation adds to it for K
+                             # perturbations of B fields, under the key (B, K), shared likewise
     adjoints::Dict{Int, Any} # what adjoint! adds to it, under the key B, built at its first call
                              # with B fields, shared in the same way
 
@@ -70,6 +73,7 @@ struct KolmogorovPropagator{A<:AbstractArray}
                                      Float64(dt),
                                      template,
                                      Dict{Int, Any}(),
+                                     Dict{Tuple{Int, Int}, Any}(),
                                      Dict{Int, Any}())
     end
 
@@ -82,6 +86,7 @@ struct KolmogorovPropagator{A<:AbstractArray}
                P.dt,
                P.template,
                P.cache,
+               P.tangents,
                P.adjoints)
 end
 
@@ -96,12 +101,26 @@ function _storage(P::KolmogorovPropagator, B::Int)
         X = FTFields(similar(P.template, ComplexF64, (P.n + 1, 2P.n + 1, B)))
         V = similar(X)
 
-        (X        = X,                                  # the fields
-         V        = V,                                  # the perturbations, or the adjoint fields
-         explicit = ExplicitTerm(X, P.m, P.kf),         # the explicit term of the equation
-         tangent  = TangentTerm(X, P.m),                # and of its tangent
-         single   = Flows.CB3R2R3e(X),                  # the registers of the scheme, for the equation
-         coupled  = Flows.CB3R2R3e(Flows.couple(X, V))) # and for the equation with its tangent
+        (X        = X,                          # the fields
+         V        = V,                          # a second batch: the adjoint fields, or a term
+         explicit = ExplicitTerm(X, P.m, P.kf), # the explicit term of the equation
+         single   = Flows.CB3R2R3e(X))          # the registers of the scheme, for the equation
+    end
+end
+
+# The storage of the tangent equation for B fields with K perturbations, as many as the fields or
+# k′ blocks of as many: in P.tangents under the key (B, K), built once, at the first call of
+# tangent! or tangents! with these sizes. The fields and their perturbations are advanced as one
+# batch, the bundle of linearised.jl, in which every field is followed by its k′ perturbations.
+function _tangent_storage(P::KolmogorovPropagator, B::Int, K::Int)
+    return get!(P.tangents, (B, K)) do
+        # ---- the bundle that the flow advances, on the device of the propagator ----
+        Z = FTFields(similar(P.template, ComplexF64, (P.n + 1, 2P.n + 1, B + K)))
+
+        (Z      = Z,                                   # the fields, each with its perturbations
+         term   = TangentTerm(Z, K ÷ B, P.m, P.kf),    # the explicit term of the equation and of
+                                                       # its tangent
+         scheme = Flows.CB3R2R3e(Z))                   # the registers of the scheme
     end
 end
 
@@ -118,27 +137,30 @@ function _adjoint_storage(P::KolmogorovPropagator, B::Int)
     end
 end
 
-# the fields X and the vectors V advanced by τ, the vectors by the tangent equation with the
-# explicit term `linearised`
-function _advance!(P::KolmogorovPropagator, X::FTFields, V::FTFields, τ::Real, linearised)
-    storage = _storage(P, size(X, 3))
-    L       = ImplicitTerm(P.Re)
+# the fields X advanced by τ, and the perturbations V with them, as many as the fields or k′ blocks
+# of as many, by the tangent equation, with the explicit term `wrap(term)` of its storage
+function _advance!(P::KolmogorovPropagator, X::FTFields, V::FTFields, τ::Real, wrap=identity)
+    # ---- input checks ----
+    size(V, 3) % size(X, 3) == 0 ||
+        throw(ArgumentError("the perturbations must be whole blocks of as many as the fields"))
 
-    # ---- the flow of the equation coupled to its tangent, at the Reynolds number of P ----
-    ϕ = Flows.flow(Flows.couple(storage.explicit, linearised),
-                   Flows.couple(L, L),
-                   storage.coupled,
+    tangent = _tangent_storage(P, size(X, 3), size(V, 3))
+    Z       = tangent.Z
+
+    # ---- the flow of the equation with its tangent, at the Reynolds number of P ----
+    ϕ = Flows.flow(wrap(tangent.term),
+                   ImplicitTerm(P.Re),
+                   tangent.scheme,
                    Flows.TimeStepConstant(P.dt))
 
-    # ---- the fields and the vectors in the storage of the flow, with the symmetry of fields ----
-    apply_symmetry!(copyto!(storage.X, X))
-    apply_symmetry!(copyto!(storage.V, V))
+    # ---- every field with its perturbations in the bundle of the flow, with the symmetry of
+    #      fields ----
+    apply_symmetry!(_bundle!(Z, X, V))
 
-    # ---- advanced together, and back ----
-    ϕ(Flows.couple(storage.X, storage.V), (0, τ))
-    copyto!(X, storage.X)
+    # ---- advanced together, the fields once, and back ----
+    ϕ(Z, (0, τ))
 
-    return copyto!(V, storage.V)
+    return _unbundle!(X, V, Z)
 end
 
 """
@@ -172,8 +194,20 @@ Advance in place by `τ` the fields `X` and the perturbations `V` together, each
 the tangent equation about the field in the same place, with the scheme and the steps of
 [`propagate!`](@ref), so that `V` becomes the derivative of the discrete flow applied to `V`.
 """
-tangent!(P::KolmogorovPropagator, X::FTFields, V::FTFields, τ::Real) =
-    _advance!(P, X, V, τ, _storage(P, size(X, 3)).tangent)
+tangent!(P::KolmogorovPropagator, X::FTFields, V::FTFields, τ::Real) = _advance!(P, X, V, τ)
+
+"""
+    tangents!(P::KolmogorovPropagator, X, V, τ) -> V
+
+Advance in place by `τ` the fields `X` and the perturbations `V` together, as [`tangent!`](@ref),
+for several perturbations of every field: `V` holds k′ blocks, one after the other, each of as
+many perturbations as `X` has fields, and every block is advanced by the tangent equation about
+the fields of `X`. Every field goes with its k′ perturbations in one batch, and is advanced once
+for all of them, so that the k′ directions of a subspace step of MultipleShooting.jl cost one
+integration of the equation and k′ of its tangent. Block by block the result is that of
+`tangent!` on the block alone, to rounding.
+"""
+tangents!(P::KolmogorovPropagator, X::FTFields, V::FTFields, τ::Real) = _advance!(P, X, V, τ)
 
 """
     forced!(P::KolmogorovPropagator, X, V, τ) -> V
@@ -185,7 +219,7 @@ forcing as an explicit term, so that this is the derivative of the flow up to th
 scheme, not that of the discrete flow to rounding.
 """
 forced!(P::KolmogorovPropagator, X::FTFields, V::FTFields, τ::Real) =
-    _advance!(P, X, V, τ, ForcedTangentTerm(_storage(P, size(X, 3)).tangent, P.Re))
+    _advance!(P, X, V, τ, term -> ForcedTangentTerm(term, P.Re))
 
 """
     stages(P::KolmogorovPropagator, X, τ) -> S

@@ -95,6 +95,18 @@ end
 # the batch X + a Y
 plus(X, a, Y) = FTFields(X .+ a .* Y)
 
+# the bundle of the fields X with their perturbations V, k′ blocks of as many, and the fields and
+# the perturbations of a bundle Z of B fields, as two batches
+bundle(X, V) = KS._bundle!(dev(FTFields(zeros(ComplexF64, n + 1, 2n + 1, size(X, 3) + size(V, 3)))), X, V)
+
+function unbundle(Z, B)
+    X = dev(FTFields(zeros(ComplexF64, n + 1, 2n + 1, B)))
+    V = dev(FTFields(zeros(ComplexF64, n + 1, 2n + 1, size(Z, 3) - B)))
+    KS._unbundle!(X, V, Z)
+
+    return X, V
+end
+
 # the largest difference relative to the largest coefficient, on the CPU
 reldiff(A, B) = maximum(abs, cpu(A) .- cpu(B)) / maximum(abs, cpu(B))
 

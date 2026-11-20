@@ -8,9 +8,13 @@
 
     # ---- explicit terms: the form of the advection and the transforms differ, so equal to rounding ----
     E  = KS.ExplicitTerm(X, m, kf)
-    Et = KS.TangentTerm(X, m)
+    Et = KS.TangentTerm(bundle(X, V), 1, m, kf)
     dX = E(0.0, X, similar(X))
-    dV = Et(0.0, X, dX, V, similar(V))
+
+    # the term of the equation and of its tangent on the bundle of Y with W: the two parts
+    tangent(Y, W) = (Z = bundle(Y, W); unbundle(Et(0.0, Z, similar(Z)), size(Y, 3)))
+    dY, dV = tangent(X, V)
+    @test reldiff(dY, dX) < 1e-14
     for i in 1:3
         d = ex(0.0, copy(Ωs[i]), OKF.FTField(n, m))
         @test reldiff(cpu(dX)[:, :, i], coefficients(d)) < 1e-13
@@ -46,16 +50,27 @@
 
     # ---- linear in the perturbations, a field from fields, and a batch of one as in a batch ----
     W  = random_fields(3)
-    dW = Et(0.0, X, dX, W, similar(W))
-    @test reldiff(Et(0.0, X, dX, plus(V, 2.5, W), similar(V)), plus(dV, 2.5, dW)) < 1e-14
+    dW = last(tangent(X, W))
+    @test reldiff(last(tangent(X, plus(V, 2.5, W))), plus(dV, 2.5, dW)) < 1e-14
     @test cpu(KS.apply_symmetry!(copy(dV))) == cpu(dV)
     X₂  = dev(FTFields(cpu(X)[:, :, 2:2]))
-    Et₁ = KS.TangentTerm(X₂, m)
-    @test reldiff(Et₁(0.0, X₂, similar(X₂), view(V, :, :, 2:2), similar(X₂)), cpu(dV)[:, :, 2:2]) < 1e-14
+    V₂  = dev(FTFields(cpu(V)[:, :, 2:2]))
+    Z₂  = bundle(X₂, V₂)
+    Et₁ = KS.TangentTerm(Z₂, 1, m, kf)
+    @test reldiff(last(unbundle(Et₁(0.0, Z₂, similar(Z₂)), 1)), cpu(dV)[:, :, 2:2]) < 1e-14
+
+    # ---- two perturbations of every field, in two blocks: each as alone, and the fields once ----
+    Z₃  = bundle(X, FTFields(cat(cpu(V), cpu(W); dims=3)) |> dev)
+    Et₂ = KS.TangentTerm(Z₃, 2, m, kf)
+    dY₂, dVW = unbundle(Et₂(0.0, Z₃, similar(Z₃)), 3)
+    @test reldiff(dY₂, dX) < 1e-14
+    @test reldiff(cpu(dVW)[:, :, 1:3], dV) < 1e-14
+    @test reldiff(cpu(dVW)[:, :, 4:6], dW) < 1e-14
 
     # ---- the term forced in the Reynolds number adds -Δω/Re² ----
     Ef = KS.ForcedTangentTerm(Et, Re)
-    dF = Ef(0.0, X, dX, V, similar(V))
+    Z  = bundle(X, V)
+    dF = last(unbundle(Ef(0.0, Z, similar(Z)), 3))
     ΔX = KS.laplacian!(similar(X), X)
     @test reldiff(plus(dF, -1, dV), ΔX ./ -Re^2) < 1e-14
 
@@ -74,9 +89,10 @@ end
     V = random_fields(4; seed=2)
     W = random_fields(4; seed=3)
 
-    Et = KS.TangentTerm(X, m)
+    Z  = bundle(X, V)
+    Et = KS.TangentTerm(Z, 1, m, kf)
     Ea = KS.AdjointTerm(X, m)
-    dV = Et(0.0, X, similar(X), V, similar(V))
+    dV = last(unbundle(Et(0.0, Z, similar(Z)), 4))
     dW = Ea(0.0, X, W, similar(W))
 
     # ---- the transpose of the tangent term in the inner product, field by field ----

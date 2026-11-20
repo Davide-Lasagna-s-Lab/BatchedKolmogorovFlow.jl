@@ -182,6 +182,34 @@ end
     @test maximum(abs, cpu(J)) == 0
 end
 
+@testset "tangents!, blocks about the same fields" begin
+    Ωs = okf_fields(3)
+    P  = KolmogorovPropagator(n, m, Re, kf; dt=dt, array=ARRAY)
+    τ  = 1.234
+
+    # ---- two blocks of three perturbations, each about the three fields ----
+    V = random_fields(6)
+    Y = batch(Ωs)
+    W = tangents!(P, Y, copy(V), τ)
+
+    # ---- block by block as tangent! on the block alone ----
+    for a in 1:2
+        block = (3a - 2):3a
+        Vₐ    = dev(FTFields(cpu(V)[:, :, block]))
+        @test reldiff(cpu(W)[:, :, block], tangent!(P, batch(Ωs), Vₐ, τ)) < 1e-13
+    end
+
+    # ---- the fields advanced once, as propagate! takes them ----
+    @test cpu(Y) == cpu(propagate!(P, batch(Ωs), τ))
+
+    # ---- one storage for the two sizes, built once and looked up after ----
+    @test haskey(P.tangents, (3, 6))
+    @test KS._tangent_storage(P, 3, 6) === KS._tangent_storage(P, 3, 6)
+
+    # ---- perturbations that are not whole blocks of the fields are refused ----
+    @test_throws ArgumentError tangents!(P, batch(Ωs), random_fields(4), τ)
+end
+
 @testset "another Reynolds number, and forced!   " begin
     Ωs = okf_fields(3)
     Λs = okf_fields(3; seed=2, laminar=false)
