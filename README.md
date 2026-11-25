@@ -55,7 +55,7 @@ and `8:10`. The fields of a batch do not act on one another, since a field
 with its perturbations is one segment of an orbit. The chunks are then
 separate integrations, and the result is that of one task, to rounding. The
 tasks run at the same time and cannot share arrays or plans, so that each has
-its own storage. `propagate!`, `tangent!`, `tangents!` and `forced!` use the
+its own storage. `propagate!`, `tangent!` and `forced!` use the
 tasks. The other functions run on one. Start Julia with at least `N` threads,
 `julia -t N`.
 
@@ -106,8 +106,7 @@ not run at the same time.
 | function | what it does |
 |---|---|
 | `propagate!(P, X, τ)` | advances every field of `X` in place by `τ`, in steps of `dt` and a last shorter step that ends on `τ` |
-| `tangent!(P, X, V, τ)` | advances the fields `X` and the perturbations `V` together, `V` by the tangent equation, with the same scheme and steps: the derivative of the discrete flow |
-| `tangents!(P, X, V, τ)` | as `tangent!`, for `k′` blocks of perturbations in `V`, one after the other, each about the fields of `X`, which are advanced once for all the blocks |
+| `tangent!(P, X, V, τ)` | advances the fields `X` and the perturbations `V` together, `V` by the tangent equation, with the same scheme and steps: the derivative of the discrete flow. `V` holds `k′ ≥ 1` blocks of perturbations, one after the other, each about the fields of `X`, which are advanced once for all the blocks |
 | `forced!(P, X, V, τ)` | as `tangent!`, with the tangent equation forced by the derivative of the right-hand side in the Reynolds number, `-Δω/Re²` |
 | `rhs!(P, F, X)` | the time derivative of every field |
 | `shift!(P, X, s)` | `ω(x, y) → ω(x + s, y)` for every field, the coefficients times `cis(j s)` |
@@ -117,9 +116,9 @@ not run at the same time.
 | `realdots(X, Y)` | the inner products of the fields one by one, the mean of `ω₁ ω₂`, a real array `(1, 1, B)` |
 | `realdot(X, Y)` | their sum over the fields |
 
-The first seven are methods of the functions of MultipleShooting, and
+The first six are methods of the functions of MultipleShooting, and
 `adjoint!` is a method of `LinearAlgebra.adjoint!`, exported. Every function takes views
-of a batch, `view(X, :, :, b)`. `propagate!`, `tangent!`, `tangents!`, `forced!`,
+of a batch, `view(X, :, :, b)`. `propagate!`, `tangent!`, `forced!`,
 `stages`, `adjoint!` and `rhs!` first give their input the symmetry of fields, by
 `apply_symmetry!`, so that the flow, its tangent and its adjoint vanish on what
 is not a field.

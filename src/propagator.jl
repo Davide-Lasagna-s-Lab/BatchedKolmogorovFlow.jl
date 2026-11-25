@@ -12,8 +12,7 @@
     KolmogorovPropagator(P, Re)
 
 The flow of two-dimensional Kolmogorov flow on batches of vorticity fields, for the searches of
-MultipleShooting.jl: [`propagate!`](@ref), [`tangent!`](@ref), [`tangents!`](@ref),
-[`forced!`](@ref), [`rhs!`](@ref), [`shift!`](@ref) and [`dshift!`](@ref), and the transpose of
+MultipleShooting.jl: [`propagate!`](@ref), [`tangent!`](@ref), [`forced!`](@ref), [`rhs!`](@ref), [`shift!`](@ref) and [`dshift!`](@ref), and the transpose of
 the tangent, [`adjoint!`](@ref), over the stages kept by [`stages`](@ref). A batch is an
 [`FTFields`](@ref) on an array of type `array`, the Fourier coefficients of `B` fields. Field by
 field the results are those of OpenKolmogorovFlow with the same scheme and steps, to rounding.
@@ -48,7 +47,7 @@ Two propagators that share their storage must not run at the same time.
   into as many chunks of fields, and every task advances its chunk as a batch of its own, on its
   own thread, while the others advance theirs. The fields of a batch do not act on one another,
   so that the result is that of one task, to rounding. This is how [`propagate!`](@ref),
-  [`tangent!`](@ref), [`tangents!`](@ref) and [`forced!`](@ref) use the cores of a CPU. The other
+  [`tangent!`](@ref) and [`forced!`](@ref) use the cores of a CPU. The other
   methods run on one task. Start Julia with at least as many threads, `julia -t 16` for
   `tasks=16`.
 """
@@ -154,23 +153,17 @@ end
     tangent!(P::KolmogorovPropagator, X, V, τ) -> V
 
 Advance in place by `τ` the fields `X` and the perturbations `V` together, each perturbation by
-the tangent equation about the field in the same place, with the scheme and the steps of
-[`propagate!`](@ref), so that `V` becomes the derivative of the discrete flow applied to `V`.
+the tangent equation about its field, with the scheme and the steps of [`propagate!`](@ref), so
+that `V` becomes the derivative of the discrete flow applied to `V`.
+
+`V` holds k′ ≥ 1 blocks, one after the other, each of as many perturbations as `X` has fields,
+and every block is advanced about the fields of `X`: one block, a batch like `X`, for a product
+of the Jacobian of MultipleShooting.jl, and k′ for the directions of its subspace step. Every
+field goes with its k′ perturbations in one batch, and is advanced once for all of them, so that
+the k′ directions cost one integration of the equation and k′ of its tangent. Block by block the
+result is that of `tangent!` on the block alone, to rounding.
 """
 tangent!(P::KolmogorovPropagator, X::FTFields, V::FTFields, τ::Real) = _advance!(P, X, V, τ)
-
-"""
-    tangents!(P::KolmogorovPropagator, X, V, τ) -> V
-
-Advance in place by `τ` the fields `X` and the perturbations `V` together, as [`tangent!`](@ref),
-for several perturbations of every field: `V` holds k′ blocks, one after the other, each of as
-many perturbations as `X` has fields, and every block is advanced by the tangent equation about
-the fields of `X`. Every field goes with its k′ perturbations in one batch, and is advanced once
-for all of them, so that the k′ directions of a subspace step of MultipleShooting.jl cost one
-integration of the equation and k′ of its tangent. Block by block the result is that of
-`tangent!` on the block alone, to rounding.
-"""
-tangents!(P::KolmogorovPropagator, X::FTFields, V::FTFields, τ::Real) = _advance!(P, X, V, τ)
 
 """
     forced!(P::KolmogorovPropagator, X, V, τ) -> V
@@ -367,7 +360,7 @@ end
 
 # The storage of the tangent equation of task c for B fields with K perturbations, as many as the
 # fields or k′ blocks of as many: in P.tangents[c] under the key (B, K), built once, at the first
-# call of tangent! or tangents! with these sizes. The fields and their perturbations are advanced
+# call of tangent! with these sizes. The fields and their perturbations are advanced
 # as one batch, the bundle of linearised.jl, in which every field is followed by its k′
 # perturbations.
 function _tangent_storage(P::KolmogorovPropagator, B::Int, K::Int, c::Int=1)
@@ -402,7 +395,7 @@ end
 
 # the fields X advanced by τ, and the perturbations V with them, as many as the fields or k′ blocks
 # of as many, by the tangent equation, with the explicit term `wrap(term)` of its storage: what
-# tangent!, tangents! and forced! do
+# tangent! and forced! do
 function _advance!(P::KolmogorovPropagator, X::FTFields, V::FTFields, τ::Real, wrap=identity)
     # ---- input checks ----
     size(V, 3) % size(X, 3) == 0 ||

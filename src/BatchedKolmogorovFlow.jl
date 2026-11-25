@@ -23,14 +23,13 @@ import AbstractFFTs
 import FFTW
 import Flows
 import OpenKolmogorovFlow
-import MultipleShooting: propagate!, tangent!, tangents!, forced!, rhs!, shift!, dshift!, dots
+import MultipleShooting: propagate!, tangent!, forced!, rhs!, shift!, dshift!, dots
 
 export KolmogorovPropagator,
        FTFields,
        Fields,
        propagate!,
        tangent!,
-       tangents!,
        forced!,
        rhs!,
        shift!,

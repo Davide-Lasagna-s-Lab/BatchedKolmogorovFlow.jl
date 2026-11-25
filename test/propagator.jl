@@ -229,7 +229,7 @@ end
     @test_throws ArgumentError adjoint!(P, stages(P, X, τ), copy(W))
 end
 
-@testset "tangents!, blocks about the same fields" begin
+@testset "tangent!, blocks about the same fields" begin
     Ωs = okf_fields(3)
     P  = KolmogorovPropagator(n, m, Re, kf; dt=dt, array=ARRAY)
     τ  = 1.234
@@ -237,7 +237,7 @@ end
     # ---- two blocks of three perturbations, each about the three fields ----
     V = random_fields(6)
     Y = batch(Ωs)
-    W = tangents!(P, Y, copy(V), τ)
+    W = tangent!(P, Y, copy(V), τ)
 
     # ---- block by block as tangent! on the block alone ----
     for a in 1:2
@@ -254,7 +254,7 @@ end
     @test KS._tangent_storage(P, 3, 6) === KS._tangent_storage(P, 3, 6)
 
     # ---- perturbations that are not whole blocks of the fields are refused ----
-    @test_throws ArgumentError tangents!(P, batch(Ωs), random_fields(4), τ)
+    @test_throws ArgumentError tangent!(P, batch(Ωs), random_fields(4), τ)
 end
 
 @testset "another Reynolds number, and forced!   " begin
@@ -389,12 +389,12 @@ DEVICE == "cpu" && @testset "a batch cut among tasks                " begin
 
             @test reldiff(propagate!(P, copy(X), τ), propagate!(P₁, copy(X), τ)) < 1e-13
             @test reldiff(tangent!(P, copy(X), copy(V), τ), tangent!(P₁, copy(X), copy(V), τ)) < 1e-13
-            @test reldiff(tangents!(P, copy(X), copy(W), τ), tangents!(P₁, copy(X), copy(W), τ)) < 1e-13
+            @test reldiff(tangent!(P, copy(X), copy(W), τ), tangent!(P₁, copy(X), copy(W), τ)) < 1e-13
             @test reldiff(forced!(P, copy(X), copy(V), τ), forced!(P₁, copy(X), copy(V), τ)) < 1e-13
 
             # ---- the fields are advanced with their perturbations, as by one task ----
             Y = copy(X)
-            tangents!(P, Y, copy(W), τ)
+            tangent!(P, Y, copy(W), τ)
             @test reldiff(Y, propagate!(P₁, copy(X), τ)) < 1e-13
         end
 
