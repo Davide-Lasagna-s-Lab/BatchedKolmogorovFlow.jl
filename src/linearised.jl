@@ -16,48 +16,84 @@
 #
 #     Z = (ω₁, λ₁¹, …, λ₁ᵏ′,   ω₂, λ₂¹, …, λ₂ᵏ′,   …,   ω_B, λ_B¹, …, λ_Bᵏ′),
 #
-# an FTFields of (1 + k′) B fields. Seen as an array (n+1, 2n+1, 1 + k′, B), field i is
-# [:, :, 1, i] and its perturbations are [:, :, 2:end, i]. The steps of a stage that are the same
-# for a field and for a perturbation, the velocity, the transforms, the derivatives and the
-# implicit solve, act on the whole batch at once. The fields are advanced once whatever k′ is,
-# and only the products differ between the fields and their perturbations.
+# an FTFields of (1 + k′) B fields. The steps of a stage that are the same for a field and for a
+# perturbation, the velocity, the transforms, the derivatives and the implicit solve, act on the
+# whole batch at once. The fields are advanced once whatever k′ is, and only the products differ
+# between the fields and their perturbations.
+#
+# Where it comes from. tangent! takes the B fields in a batch X, and their perturbations in V,
+# a batch like X for one perturbation of every field, or a vector of k′ of them, the directions
+# of a subspace step, V[k₁] holding perturbation k₁ of every field. With B = 3 fields and k′ = 2,
+# the slices along the last dimension are
+#
+#     X       = (ω₁,  ω₂,  ω₃)
+#     V[1]    = (λ₁¹, λ₂¹, λ₃¹)
+#     V[2]    = (λ₁², λ₂², λ₃²)
+#
+# and the bundle holds them field by field, every field followed by its own perturbations,
+#
+#     Z       = (ω₁, λ₁¹, λ₁²,   ω₂, λ₂¹, λ₂²,   ω₃, λ₃¹, λ₃²),
+#
+# 9 fields. Seen as an array (n+1, 2n+1, 1 + k′, B) = (n+1, 2n+1, 3, 3), the third index is the
+# place in the group of a field, 1 for the field and 1 + k₁ for its perturbation k₁, and the
+# fourth the field: field i is [:, :, 1, i], and its perturbation k₁ is [:, :, 1 + k₁, i]. So
+#
+#     X[:, :, i]       goes to   Z[:, :, 1, i]         the fields
+#     V[k₁][:, :, i]   goes to   Z[:, :, 1 + k₁, i]    the perturbation k₁ of every field
+#
+# _bundle! makes this copy, one for the fields and one for every k₁, each of whole batches, and
+# _unbundle! the inverse. With the fields first in their groups, the fields of a stage are
+# [:, :, 1:1, :], which broadcasts against the k′ perturbations [:, :, 2:end, :]: the products of
+# the tangent term are written once for all the directions.
 
-# The two parts of a bundle of fields with their k′ perturbations, on its entries: the fields, an
-# array (·, ·, 1, B), and the perturbations, (·, ·, k′, B), so that the fields broadcast against
-# their perturbations. For a bundle in Fourier space or on the grid.
+# The two parts of a bundle of fields with their k′ perturbations, on its entries, seen as an
+# array (·, ·, 1 + k′, B): the fields, (·, ·, 1, B), and the perturbations, (·, ·, k′, B), so that
+# the fields broadcast against their perturbations, and place k₁ of the second is perturbation
+# k₁. Views, with no copy. For a bundle in Fourier space or on the grid.
 function _parts(Z::AbstractArray, k′::Int)
     A = reshape(parent(Z), size(Z, 1), size(Z, 2), 1 + k′, :)
 
     return view(A, :, :, 1:1, :), view(A, :, :, 2:(1 + k′), :)
 end
 
-# The fields `fields` of X, all of them or those of the chunk of a task, and their perturbations in V
-# written into the bundle Z. V holds k′ batches like X, a vector or a tuple of them: V[a] is
-# perturbation a of every field, as MultipleShooting.jl hands over the directions of a subspace
-# step.
+# The fields `fields` of X, all of them or those of the chunk of a task, and their perturbations
+# in V written into the bundle Z, as in the example at the top: X[:, :, i] into Z[:, :, 1, i], and
+# V[k₁][:, :, i] into Z[:, :, 1 + k₁, i]. V holds k′ batches like X, a vector or a tuple of them:
+# V[k₁] is perturbation k₁ of every field, as MultipleShooting.jl hands over the directions of a
+# subspace step. Z holds as many groups as the fields copied.
 function _bundle!(Z::FTFields, X::FTFields, V, fields::UnitRange{Int}=1:size(X, 3))
     k′   = length(V)
     Ω, Λ = _parts(Z, k′)
 
-    # ---- every field, and its perturbation a in place a after the fields ----
+    # ---- the fields, first in their groups ----
+    #      Z[:, :, 1, i] = X[:, :, i]
     view(Ω, :, :, 1, :) .= view(parent(X), :, :, fields)
-    for a in 1:k′
-        view(Λ, :, :, a, :) .= view(parent(V[a]), :, :, fields)
+
+    # ---- the perturbation k₁ of every field, in place 1 + k₁ of its group, one batch at a
+    #      time ----
+    #      Z[:, :, 1 + k₁, i] = V[k₁][:, :, i]
+    for k₁ in 1:k′
+        view(Λ, :, :, k₁, :) .= view(parent(V[k₁]), :, :, fields)
     end
 
     return Z
 end
 
-# The fields of the bundle Z written into the fields `fields` of X, and their perturbations into
-# the same places of the k′ batches of V
+# The inverse of _bundle!: the fields of the bundle Z written into the fields `fields` of X, and
+# their perturbations into the same places of the k′ batches of V, Z[:, :, 1, i] into
+# X[:, :, i] and Z[:, :, 1 + k₁, i] into V[k₁][:, :, i]
 function _unbundle!(X::FTFields, V, Z::FTFields, fields::UnitRange{Int}=1:size(X, 3))
     k′   = length(V)
     Ω, Λ = _parts(Z, k′)
 
-    # ---- every field, and place a after the fields into its perturbation a ----
+    # ---- the fields, from the first place of their groups ----
+    #      X[:, :, i] = Z[:, :, 1, i]
     view(parent(X), :, :, fields) .= view(Ω, :, :, 1, :)
-    for a in 1:k′
-        view(parent(V[a]), :, :, fields) .= view(Λ, :, :, a, :)
+
+    # ---- the perturbation k₁ of every field, from place 1 + k₁ of its group ----
+    #      V[k₁][:, :, i] = Z[:, :, 1 + k₁, i]
+    for k₁ in 1:k′
+        view(parent(V[k₁]), :, :, fields) .= view(Λ, :, :, k₁, :)
     end
 
     return V
