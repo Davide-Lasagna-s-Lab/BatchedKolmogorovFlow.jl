@@ -26,7 +26,7 @@ import OpenKolmogorovFlow
 import MultipleShooting: propagate!, tangent!, forced!, rhs!, shift!, dshift!, dots
 
 export KolmogorovPropagator,
-       propagators,
+       KolmogorovPropagatorDict,
        FTFields,
        Fields,
        propagate!,
@@ -48,5 +48,6 @@ include("implicit.jl")
 include("nonlinear.jl")
 include("linearised.jl")
 include("propagator.jl")
+include("propagatordict.jl")
 
 end

@@ -31,20 +31,23 @@ end
     @test_throws ArgumentError tangent!(P, random_fields(3), random_fields(3), 0.1)
     @test_throws ArgumentError tangent!(P, random_fields(3), [random_fields(3) for k₁ in 1:3], 0.1)
 
-    # ---- the propagators of several sizes, by size: the equation alone goes to the one with the
-    #      fewest perturbations, and a size that is not there is an error ----
-    D = propagators(n, m, Re, kf; sizes=[(3, 1), (3, 2), (1, 0)], dt=dt, device=DEVICE)
+    # ---- the propagators of several sizes, by size: the equation alone goes to one of its fields,
+    #      and a size that is not there is an error ----
+    D = KolmogorovPropagatorDict(n, m, Re, kf; sizes=[(3, 1), (3, 2), (1, 0)], dt=dt, device=DEVICE)
     @test sort(collect(keys(D))) == [(1, 0), (3, 1), (3, 2)]
     @test (D[3, 2].B, D[3, 2].k′, D[3, 2].dt) == (3, 2, dt)
-    @test KS._fields(D, 3) === D[3, 1]
-    @test KS._fields(D, 1) === D[1, 0]
+    @test D[3, 2] === D[(3, 2)]
+    @test D[3].B == 3
+    @test D[1] === D[1, 0]
+    @test_throws ArgumentError D[2]
+    @test_throws ArgumentError D[2, 1]
     @test_throws ArgumentError propagate!(D, random_fields(2), 0.1)
     @test_throws ArgumentError tangent!(D, random_fields(1), random_fields(1), 0.1)
     @test_throws ArgumentError tangent!(D, random_fields(3), [random_fields(3) for k₁ in 1:3], 0.1)
-    @test_throws ArgumentError propagators(n, m, Re, kf; sizes=[])
+    @test_throws ArgumentError KolmogorovPropagatorDict(n, m, Re, kf; sizes=[])
 
     # ---- the propagators at another Reynolds number, with the same workspaces ----
-    E = propagators(D, 35.0)
+    E = KolmogorovPropagatorDict(D, 35.0)
     @test Set(keys(E)) == Set(keys(D))
     @test all(E[s].Re == 35.0 && E[s].whole === D[s].whole for s in keys(D))
 
@@ -63,7 +66,7 @@ end
 
 @testset "propagate!, field by field as OKF + Flows" begin
     Ωs = okf_fields(4)
-    P  = propagators(n, m, Re, kf; sizes=[(4, 0), (2, 0), (5, 0), (1, 0)], dt=dt, device=DEVICE)
+    P  = KolmogorovPropagatorDict(n, m, Re, kf; sizes=[(4, 0), (2, 0), (5, 0), (1, 0)], dt=dt, device=DEVICE)
 
     # ---- a span that is a whole number of steps, and one that is not, as the segments of a search ----
     for τ in (1.0, 2.345)
@@ -99,7 +102,7 @@ end
 @testset "propagate! as a flow                   " begin
     Ωs = okf_fields(3)
     X  = batch(Ωs)
-    P  = propagators(n, m, Re, kf; sizes=[(3, 0), (1, 0)], dt=dt, device=DEVICE)
+    P  = KolmogorovPropagatorDict(n, m, Re, kf; sizes=[(3, 0), (1, 0)], dt=dt, device=DEVICE)
 
     # ---- a span of zero leaves the fields, and two spans one after the other make their sum ----
     @test cpu(propagate!(P, copy(X), 0)) == cpu(X)
@@ -160,7 +163,7 @@ end
 @testset "tangent!, field by field as OKF + Flows " begin
     Ωs = okf_fields(3)
     Λs = okf_fields(3; seed=2, laminar=false)
-    P  = propagators(n, m, Re, kf; sizes=[(3, 1), (1, 1)], dt=dt, device=DEVICE)
+    P  = KolmogorovPropagatorDict(n, m, Re, kf; sizes=[(3, 1), (1, 1)], dt=dt, device=DEVICE)
 
     # ---- the coupled tangent equation of OKF ----
     τ = 1.234
@@ -260,7 +263,7 @@ end
 
 @testset "tangent!, batches about the same fields" begin
     Ωs = okf_fields(3)
-    P  = propagators(n, m, Re, kf; sizes=[(3, 1), (3, 2)], dt=dt, device=DEVICE)
+    P  = KolmogorovPropagatorDict(n, m, Re, kf; sizes=[(3, 1), (3, 2)], dt=dt, device=DEVICE)
     τ  = 1.234
 
     # ---- two batches of three perturbations, each about the three fields ----
@@ -369,11 +372,11 @@ end
     W   = random_fields(256; seed=9)
     F   = similar(X)
     one = sizeof(parent(X))
-    P   = propagators(n, m, Re, kf; sizes=[(256, 1)], dt=dt, device=DEVICE, adjoint=true)
+    P   = KolmogorovPropagatorDict(n, m, Re, kf; sizes=[(256, 1)], dt=dt, device=DEVICE, adjoint=true)
 
     # ---- the propagator of the size is only looked up ----
-    @test allocated(() -> KS._sized(P, 256, 1)) == 0
-    @test allocated(() -> KS._fields(P, 256)) == 0
+    @test allocated(() -> P[256, 1]) == 0
+    @test allocated(() -> P[256]) == 0
 
     # ---- so that a call allocates much less than one batch, over three steps: a few kB for each
     #      call and each step, whatever the size of the batch ----
@@ -394,11 +397,11 @@ end
 DEVICE === :cpu && @testset "a batch cut among tasks                " begin
     Ωs = okf_fields(5)
     τ  = 0.734
-    P₁ = propagators(n, m, Re, kf; sizes=[(B, k′) for B in (1, 2, 3, 5) for k′ in (1, 2)], dt=dt,
+    P₁ = KolmogorovPropagatorDict(n, m, Re, kf; sizes=[(B, k′) for B in (1, 2, 3, 5) for k′ in (1, 2)], dt=dt,
                      adjoint=true)
 
     for tasks in (2, 3)
-        P = propagators(n, m, Re, kf; sizes=[(B, k′) for B in (5, tasks, 1) for k′ in (1, 2)], dt=dt,
+        P = KolmogorovPropagatorDict(n, m, Re, kf; sizes=[(B, k′) for B in (5, tasks, 1) for k′ in (1, 2)], dt=dt,
                         tasks=tasks, adjoint=true)
 
         # ---- batches of more fields than tasks, of as many, and of fewer ----

@@ -69,7 +69,7 @@ end
     X = random_fields(3; seed=1)
     V = random_fields(3; seed=2)
     W = random_fields(3; seed=3)
-    P = propagators(n, m, Re, kf; sizes=[(3, 1), (1, 0), (5, 0)], dt=dt, device=DEVICE, adjoint=true)
+    P = KolmogorovPropagatorDict(n, m, Re, kf; sizes=[(3, 1), (1, 0), (5, 0)], dt=dt, device=DEVICE, adjoint=true)
     τ = 1.234
     Z = adjoint!(P, stages(P, X, τ), copy(W))
 
@@ -89,8 +89,8 @@ end
 
     # ---- the propagators at another Reynolds number share the workspaces and give the results of
     #      those made there, the transpose of their own tangent ----
-    Q = propagators(P, 35.0)
-    R = propagators(n, m, 35.0, kf; sizes=[(3, 1)], dt=dt, device=DEVICE, adjoint=true)
+    Q = KolmogorovPropagatorDict(P, 35.0)
+    R = KolmogorovPropagatorDict(n, m, 35.0, kf; sizes=[(3, 1)], dt=dt, device=DEVICE, adjoint=true)
     @test cpu(adjoint!(Q, stages(Q, X, τ), copy(W))) == cpu(adjoint!(R, stages(R, X, τ), copy(W)))
     a = products(tangent!(Q, copy(X), copy(V), τ), W)
     b = products(V, adjoint!(Q, stages(Q, X, τ), copy(W)))

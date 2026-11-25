@@ -4,16 +4,13 @@
 # implicit, and the transpose of its tangent, the adjoint of the discrete flow.
 #
 # A propagator is of one size: batches of B fields with k′ perturbations each, k′ = 0 for none.
-# It holds what its flows advance and work on, its workspace, made with it, so that a call
-# allocates no batch. A search calls a few sizes, all known before it starts: B fields alone, B
-# fields with one perturbation each, for a product of the Jacobian, and B fields with k′
-# perturbations each, for a subspace step. `propagators` makes a propagator for each, and returns
-# them in a dictionary by size, which is itself a propagator: it hands every call to the one of
-# its size.
+# It holds what its flows advance and work on, its workspaces, made with it, so that a call
+# allocates no batch. The propagators of the few sizes that a search calls go together in a
+# dictionary, propagatordict.jl.
 #
-# The file has four parts: the propagator and the dictionary; the methods of the interface, which
-# are what a search calls; the same methods on the dictionary; then what serves them, the tasks
-# of a propagator on the CPU and the advance of fields with their perturbations.
+# The file has three parts: the propagator; the methods of the interface, which are what a search
+# calls; then what serves them, the tasks of a propagator on the CPU and the advance of fields with
+# their perturbations.
 
 """
     KolmogorovPropagator(n, m, Re, kf; B, k′=0, dt=0.01, scheme=:CB3R2R3e, device=:cpu, tasks=1,
@@ -32,7 +29,7 @@ The propagator is of one size, and holds the workspace of that size, made with i
 call allocates no batch, but for the stages that [`stages`](@ref) returns. It takes batches of
 `B` fields, and [`tangent!`](@ref) a vector of `k′` batches of perturbations, or one batch when
 `k′ = 1`, as [`forced!`](@ref). Another size is an error. A search calls a few sizes, which
-[`propagators`](@ref) makes together.
+[`KolmogorovPropagatorDict`](@ref) makes together.
 
 The second form is the propagator of `P` at another Reynolds number. It shares the workspace of
 `P` and costs nothing. Two propagators that share their workspace must not run at the same time.
@@ -115,10 +112,10 @@ struct KolmogorovPropagator
             throw(ArgumentError("scheme must be one of Flows.imex_schemes, " *
                                 "$(sort(collect(keys(Flows.imex_schemes))))"))
 
-        # ---- a batch of b fields on the device, and the registers of the scheme for batches
-        #      like X, in a mode of Flows.jl ----
-        template              = _array(Val(device)){ComplexF64}(undef, 0, 0, 0)
-        batch(b)              = FTFields(similar(template, ComplexF64, (n + 1, 2n + 1, b)))
+        # ---- a batch of b fields on the device, Array or CuArray, and the registers of the
+        #      scheme for batches like X, in a mode of Flows.jl ----
+        array                 = _array(Val(device))
+        batch(b)              = FTFields(array{ComplexF64}(undef, n + 1, 2n + 1, b))
         registers(X, mode...) = Flows.imex_schemes[scheme](X, mode...)
 
         # ---- the workspaces of b fields: of the equation, of the tangent equation, and of the
@@ -188,61 +185,6 @@ end
 # extension of the package for CUDA adds once CUDA is loaded
 _array(::Val{:cpu}) = Array
 _array(::Val)       = throw(ArgumentError("device=:gpu needs CUDA: `using CUDA` first"))
-
-# the propagators of several sizes, by size (B, k′)
-const Propagators = Dict{Tuple{Int, Int}, KolmogorovPropagator}
-
-"""
-    propagators(n, m, Re, kf; sizes, kwargs...) -> D
-    propagators(D, Re) -> D
-
-The propagators of the sizes `sizes`, a vector of pairs `(B, k′)`, each a
-[`KolmogorovPropagator`](@ref) of `B` fields with `k′` perturbations each, with the options
-`kwargs` of that constructor, in a dictionary by size: `D[B, k′]` is the propagator of that size.
-The dictionary is a propagator of MultipleShooting.jl that hands every call to the one of its
-size: [`propagate!`](@ref), [`rhs!`](@ref), [`stages`](@ref) and [`adjoint!`](@ref) of `B`
-fields to that of `B` fields with the fewest perturbations, [`tangent!`](@ref) with one batch of
-perturbations and [`forced!`](@ref) to `(B, 1)`, and [`tangent!`](@ref) with a vector of `k′`
-of them to `(B, k′)`. A size that it does not hold is an error.
-
-A search of MultipleShooting.jl with `m` seeds and a subspace of `k′` directions takes
-`sizes = [(m, 1), (m, k′)]`; the sweeps of `N` segments with `k` vectors, `[(1, k), (N, k)]`.
-
-The second form is the dictionary `D` at another Reynolds number, every propagator sharing its
-workspace, so that `Re -> propagators(D, Re)` is the family of propagators that the searches with
-a free parameter of MultipleShooting.jl take.
-"""
-function propagators(n::Int, m::Int, Re::Real, kf::Int; sizes::AbstractVector, kwargs...)
-    # ---- input checks ----
-    isempty(sizes) &&
-        throw(ArgumentError("sizes must hold at least one pair (B, k′)"))
-
-    return Propagators((B, k′) => KolmogorovPropagator(n, m, Re, kf; B=B, k′=k′, kwargs...)
-                       for (B, k′) in sizes)
-end
-
-propagators(D::Propagators, Re::Real) = Propagators(s => KolmogorovPropagator(P, Re) for (s, P) in D)
-
-# the propagator of D of B fields with k′ perturbations each
-function _sized(D::Propagators, B::Int, k′::Int)
-    # ---- input checks ----
-    haskey(D, (B, k′)) ||
-        throw(ArgumentError("no propagator of $B fields with $k′ perturbations each among " *
-                            "the sizes $(sort(collect(keys(D))))"))
-
-    return D[B, k′]
-end
-
-# the propagator of D of B fields with the fewest perturbations, for the methods of the equation
-function _fields(D::Propagators, B::Int)
-    k′ = minimum((k for (b, k) in keys(D) if b == B); init=typemax(Int))
-
-    # ---- input checks ----
-    k′ < typemax(Int) ||
-        throw(ArgumentError("no propagator of $B fields among the sizes $(sort(collect(keys(D))))"))
-
-    return D[B, k′]
-end
 
 # the check that a call of B fields with k′ perturbations each is of the size of P
 function _check(P::KolmogorovPropagator, B::Int, k′::Int=P.k′)
@@ -428,10 +370,9 @@ end
 
 Shift in place every field of the batch `X` along x, `ω(x, y) → ω(x + s, y)`, the coefficients
 times `cis(j s)`. `s` is the shift, or the vector of the shifts of MultipleShooting.jl, which
-holds this one alone. Any number of fields, with no workspace, and so for a dictionary of
-[`propagators`](@ref).
+holds this one alone. Any number of fields, with no workspace.
 """
-function shift!(P::Union{KolmogorovPropagator, Propagators}, X::FTFields, s)
+function shift!(P::KolmogorovPropagator, X::FTFields, s)
     # ---- e^{i j (x + s)} is e^{i j s} times e^{i j x} ----
     X .*= cis.(X.j .* first(s))
 
@@ -443,31 +384,9 @@ end
 
 The generator of the shift along x at every field of the batch `X`, `∂ω/∂x`, written into `G`.
 `i` is the index of the shift, as MultipleShooting.jl passes it. Any number of fields, with no
-workspace, and so for a dictionary of [`propagators`](@ref).
+workspace.
 """
-dshift!(P::Union{KolmogorovPropagator, Propagators}, G::FTFields, X::FTFields, i::Int=1) = ddx!(G, X)
-
-
-# ---------------------------------------------------------------------------- #
-# the interface on a dictionary of propagators, by size                        #
-# ---------------------------------------------------------------------------- #
-
-propagate!(D::Propagators, X::FTFields, τ::Real) = propagate!(_fields(D, size(X, 3)), X, τ)
-
-tangent!(D::Propagators, X::FTFields, V::FTFields, τ::Real) =
-    tangent!(_sized(D, size(X, 3), 1), X, V, τ)
-
-tangent!(D::Propagators, X::FTFields, V::AbstractVector{<:FTFields}, τ::Real) =
-    tangent!(_sized(D, size(X, 3), length(V)), X, V, τ)
-
-forced!(D::Propagators, X::FTFields, V::FTFields, τ::Real) = forced!(_sized(D, size(X, 3), 1), X, V, τ)
-
-stages(D::Propagators, X::FTFields, τ::Real) = stages(_fields(D, size(X, 3)), X, τ)
-
-LinearAlgebra.adjoint!(D::Propagators, S::Flows.RAMStageCache, W::FTFields) =
-    adjoint!(_fields(D, size(W, 3)), S, W)
-
-rhs!(D::Propagators, F::FTFields, X::FTFields) = rhs!(_fields(D, size(X, 3)), F, X)
+dshift!(P::KolmogorovPropagator, G::FTFields, X::FTFields, i::Int=1) = ddx!(G, X)
 
 
 # ---------------------------------------------------------------------------- #

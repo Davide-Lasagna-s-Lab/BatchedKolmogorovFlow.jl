@@ -70,7 +70,8 @@ tasks. The other functions run on one. Start Julia with at least `N` threads,
 | `implicit.jl` | `ImplicitTerm`, the viscous term |
 | `nonlinear.jl` | `ExplicitTerm`, advection and forcing |
 | `linearised.jl` | `TangentTerm`, the linearised advection, `ForcedTangentTerm`, and `AdjointTerm`, its transpose |
-| `propagator.jl` | `KolmogorovPropagator` and `propagators`, the methods of MultipleShooting and `adjoint!`, then what serves them: the tasks, the advance of the fields with their perturbations |
+| `propagator.jl` | `KolmogorovPropagator`, of one size, the methods of MultipleShooting and `adjoint!`, then what serves them: the tasks, the advance of the fields with their perturbations |
+| `propagatordict.jl` | `KolmogorovPropagatorDict`, the propagators of several sizes in a dictionary, itself a propagator |
 
 The advection is written in the form of Basdevant (1983),
 `(∂²/∂x² - ∂²/∂y²)(u v) + ∂²/∂x∂y (v² - u²)`, which needs the velocity alone on
@@ -86,8 +87,8 @@ P = KolmogorovPropagator(n, m, Re, kf; B, k′=0, dt=0.01, scheme=:CB3R2R3e, dev
                          tasks=1, adjoint=false)
 Q = KolmogorovPropagator(P, Re₂)
 
-D = propagators(n, m, Re, kf; sizes=[(B, 1), (B, k′)], dt=0.01, ...)
-E = propagators(D, Re₂)
+D = KolmogorovPropagatorDict(n, m, Re, kf; sizes=[(B, 1), (B, k′)], dt=0.01, ...)
+E = KolmogorovPropagatorDict(D, Re₂)
 ```
 
 `scheme` is the scheme of Flows.jl, one of `Flows.imex_schemes`, `:CNRK2`,
@@ -106,12 +107,12 @@ two must not run at the same time.
 
 A search calls a few sizes, all known before it starts: the seeds alone, the
 seeds with one perturbation each, for a product of the Jacobian, and the seeds
-with the `k′` directions of a subspace step. `propagators` makes a propagator
+with the `k′` directions of a subspace step. `KolmogorovPropagatorDict` makes a propagator
 for each size, with the same keywords, in a dictionary by size, `D[B, k′]`.
 The dictionary is itself a propagator, which hands every call to the one of
-its size: the equation alone to that of `B` fields with the fewest
-perturbations, one batch of perturbations to `(B, 1)` and `k′` of them to
-`(B, k′)`. A search with `m` seeds and a subspace of `k′` directions takes
+its size: one batch of perturbations to `(B, 1)`, `k′` of them to `(B, k′)`,
+and the equation alone to any of `B` fields, as every one has the workspaces
+of the equation. A search with `m` seeds and a subspace of `k′` directions takes
 `sizes = [(m, 1), (m, k′)]`, the sweeps of `N` segments with `k` vectors
 `[(1, k), (N, k)]`.
 
@@ -181,7 +182,7 @@ over the same `S`.
 ```julia
 using MultipleShooting
 
-P = propagators(n, m, Re, kf; sizes=[(size(X, 3), 1), (size(X, 3), k′)])
+P = KolmogorovPropagatorDict(n, m, Re, kf; sizes=[(size(X, 3), 1), (size(X, 3), k′)])
 z = ShootingVector(X, [T, s])                     # X an FTFields, the seeds
 F = Residual(P)
 J = Jacobian(P, z)
@@ -191,7 +192,7 @@ The inner product of the fields is the method of `dots` of MultipleShooting
 for a batch of fields, so that the Krylov method, the phase conditions and the
 preconditioner all use it. For a search or a
 continuation with the Reynolds number free, the family of propagators is
-`Re -> propagators(D, Re)`. The segments have equal lengths.
+`Re -> KolmogorovPropagatorDict(D, Re)`. The segments have equal lengths.
 
 ## Tests and examples
 

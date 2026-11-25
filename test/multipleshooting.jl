@@ -35,7 +35,7 @@ end
 @testset "as a propagator of MultipleShooting    " begin
     Ωs = okf_fields(4)
     Λs = okf_fields(4; seed=2, laminar=false)
-    P  = propagators(n, m, Re, kf; sizes=[(4, 1), (4, 2)], dt=dt, device=DEVICE)
+    P  = KolmogorovPropagatorDict(n, m, Re, kf; sizes=[(4, 1), (4, 2)], dt=dt, device=DEVICE)
     z  = ShootingVector(batch(Ωs), [2.0, 0.3])
     v  = ShootingVector(batch(Λs), [0.0, -0.2])
     F  = Residual(P)
@@ -62,7 +62,7 @@ end
 
     # ---- the column of the Reynolds number, from forced!, against the centred difference of the
     #      residual at the propagators of the family ----
-    family(R) = propagators(P, R)
+    family(R) = KolmogorovPropagatorDict(P, R)
     c = MultipleShooting._forced(P, z)
     d = (Residual(family(Re + 1e-4))(similar(z), z) .- Residual(family(Re - 1e-4))(similar(z), z)) ./ 2e-4
     @test reldiff(c.X, d.X) < 1e-4
