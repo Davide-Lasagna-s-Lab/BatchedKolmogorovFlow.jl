@@ -156,21 +156,25 @@ end
 Advance in place by `τ` the fields `X` and the perturbations `V` together, each perturbation by
 the tangent equation about the field in the same place, with the scheme and the steps of
 [`propagate!`](@ref), so that `V` becomes the derivative of the discrete flow applied to `V`.
+The two batches have the same sizes, `FTFields{n, M, K}`.
 """
-tangent!(P::KolmogorovPropagator, X::FTFields, V::FTFields, τ::Real) = _advance!(P, X, V, τ)
+tangent!(P::KolmogorovPropagator, X::FTFields{n, M, K}, V::FTFields{n, M, K}, τ::Real) where {n, M, K} =
+    _advance!(P, X, V, τ)
 
 """
     tangents!(P::KolmogorovPropagator, X, V, τ) -> V
 
 Advance in place by `τ` the fields `X` and the perturbations `V` together, as [`tangent!`](@ref),
 for several perturbations of every field: `V` holds k′ blocks, one after the other, each of as
-many perturbations as `X` has fields, and every block is advanced by the tangent equation about
-the fields of `X`. Every field goes with its k′ perturbations in one batch, and is advanced once
+many perturbations as `X` has fields, an `FTFields{n, M, k′}` for the `FTFields{n, M, 1}` of `X`,
+as `FTFields(data; k=k′)` makes, and every block is advanced by the tangent equation about the
+fields of `X`. Every field goes with its k′ perturbations in one batch, and is advanced once
 for all of them, so that the k′ directions of a subspace step of MultipleShooting.jl cost one
 integration of the equation and k′ of its tangent. Block by block the result is that of
 `tangent!` on the block alone, to rounding.
 """
-tangents!(P::KolmogorovPropagator, X::FTFields, V::FTFields, τ::Real) = _advance!(P, X, V, τ)
+tangents!(P::KolmogorovPropagator, X::FTFields{n, M, 1}, V::FTFields{n, M, K}, τ::Real) where {n, M, K} =
+    _advance!(P, X, V, τ)
 
 """
     forced!(P::KolmogorovPropagator, X, V, τ) -> V
@@ -181,7 +185,7 @@ Reynolds number, the column of the parameter of MultipleShooting.jl. The scheme 
 forcing as an explicit term, so that this is the derivative of the flow up to the error of the
 scheme, not that of the discrete flow to rounding.
 """
-forced!(P::KolmogorovPropagator, X::FTFields, V::FTFields, τ::Real) =
+forced!(P::KolmogorovPropagator, X::FTFields{n, M, K}, V::FTFields{n, M, K}, τ::Real) where {n, M, K} =
     _advance!(P, X, V, τ, term -> ForcedTangentTerm(term, P.Re))
 
 """
@@ -404,10 +408,6 @@ end
 # of as many, by the tangent equation, with the explicit term `wrap(term)` of its storage: what
 # tangent!, tangents! and forced! do
 function _advance!(P::KolmogorovPropagator, X::FTFields, V::FTFields, τ::Real, wrap=identity)
-    # ---- input checks ----
-    size(V, 3) % size(X, 3) == 0 ||
-        throw(ArgumentError("the perturbations must be whole blocks of as many as the fields"))
-
     B  = size(X, 3)
     k′ = size(V, 3) ÷ B
 

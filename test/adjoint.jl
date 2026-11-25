@@ -9,8 +9,8 @@
     # ---- the identity of the transpose, field by field: τ a whole number of steps and not (100
     #      steps, and 124 with the last one shorter), a single step shorter than dt, and no step ----
     for τ in (1.0, 1.234, 0.004, 0.0)
-        a = dots(tangent!(P, copy(X), copy(V), τ), W)
-        b = dots(V, adjoint!(P, stages(P, X, τ), copy(W)))
+        a = products(tangent!(P, copy(X), copy(V), τ), W)
+        b = products(V, adjoint!(P, stages(P, X, τ), copy(W)))
         @test all(relerr(a, b) .< 1e-12)
     end
 
@@ -18,8 +18,8 @@
     Vj = plus(V, 1, junk(3; seed=5))
     Wj = plus(W, 1, junk(3; seed=6))
     S  = stages(P, X, 1.234)
-    a  = dots(tangent!(P, copy(X), copy(Vj), 1.234), Wj)
-    b  = dots(Vj, adjoint!(P, S, copy(Wj)))
+    a  = products(tangent!(P, copy(X), copy(Vj), 1.234), Wj)
+    b  = products(Vj, adjoint!(P, S, copy(Wj)))
     @test all(relerr(a, b) .< 1e-12)
     @test cpu(adjoint!(P, S, copy(Wj))) == cpu(adjoint!(P, S, KS.apply_symmetry!(copy(Wj))))
 
@@ -97,8 +97,8 @@ end
     Q = KolmogorovPropagator(P, 35.0)
     R = KolmogorovPropagator(n, m, 35.0, kf; dt=dt, array=ARRAY)
     @test cpu(adjoint!(Q, stages(Q, X, τ), copy(W))) == cpu(adjoint!(R, stages(R, X, τ), copy(W)))
-    a = dots(tangent!(Q, copy(X), copy(V), τ), W)
-    b = dots(V, adjoint!(Q, stages(Q, X, τ), copy(W)))
+    a = products(tangent!(Q, copy(X), copy(V), τ), W)
+    b = products(V, adjoint!(Q, stages(Q, X, τ), copy(W)))
     @test all(relerr(a, b) .< 1e-12)
     @test reldiff(adjoint!(Q, stages(Q, X, τ), copy(W)), Z) > 1e-3
     @test cpu(adjoint!(P, stages(P, X, τ), copy(W))) == cpu(Z)

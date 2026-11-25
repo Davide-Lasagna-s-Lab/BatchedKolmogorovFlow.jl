@@ -31,9 +31,9 @@
 
     # ---- the derivatives are antisymmetric in the inner product, the Laplacian symmetric ----
     Y = random_fields(3)
-    @test dots(KS.ddx!(D, X), Y) ≈ .-dots(X, KS.ddx!(similar(Y), Y)) rtol=1e-13
-    @test dots(KS.ddy!(D, X), Y) ≈ .-dots(X, KS.ddy!(similar(Y), Y)) rtol=1e-13
-    @test dots(KS.laplacian!(D, X), Y) ≈ dots(X, KS.laplacian!(similar(Y), Y)) rtol=1e-13
+    @test products(KS.ddx!(D, X), Y) ≈ .-products(X, KS.ddx!(similar(Y), Y)) rtol=1e-13
+    @test products(KS.ddy!(D, X), Y) ≈ .-products(X, KS.ddy!(similar(Y), Y)) rtol=1e-13
+    @test products(KS.laplacian!(D, X), Y) ≈ products(X, KS.laplacian!(similar(Y), Y)) rtol=1e-13
 end
 
 @testset "transforms                             " begin
@@ -68,9 +68,9 @@ end
 
     # ---- the mean over the grid of the product of two fields is their inner product ----
     mean(a) = vec(sum(cpu(a); dims=(1, 2))) ./ (2m + 2)^2
-    @test mean(Fields(u .* v)) ≈ dots(X, Y) rtol=1e-13
+    @test mean(Fields(u .* v)) ≈ products(X, Y) rtol=1e-13
 
     # ---- each transform is the transpose of the other, in the inner product of the fields and the
     #      mean over the grid: the step of TangentTerm that AdjointTerm reverses ----
-    @test mean(Fields(u .* r)) ≈ dots(X, R) rtol=1e-13
+    @test mean(Fields(u .* r)) ≈ products(X, R) rtol=1e-13
 end

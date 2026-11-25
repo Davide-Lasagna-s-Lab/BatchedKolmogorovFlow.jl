@@ -220,7 +220,7 @@ end
         P  = KolmogorovPropagator(n, m, Re, kf; dt=dt, scheme=name, array=ARRAY)
         ψV = tangent!(P, copy(X), copy(V), τ)
         ψW = adjoint!(P, stages(P, X, τ), copy(W))
-        @test all(relerr(dots(ψV, W), dots(V, ψW)) .< 1e-10)
+        @test all(relerr(products(ψV, W), products(V, ψW)) .< 1e-10)
     end
 
     # ---- a name that is not a scheme, and the adjoint of the scheme that has none ----
@@ -237,7 +237,7 @@ end
     # ---- two blocks of three perturbations, each about the three fields ----
     V = random_fields(6)
     Y = batch(Ωs)
-    W = tangents!(P, Y, copy(V), τ)
+    W = tangents!(P, Y, blocks(copy(V), 2), τ)
 
     # ---- block by block as tangent! on the block alone ----
     for a in 1:2
@@ -253,8 +253,10 @@ end
     @test haskey(P.tangents[1], (3, 6))
     @test KS._tangent_storage(P, 3, 6) === KS._tangent_storage(P, 3, 6)
 
-    # ---- perturbations that are not whole blocks of the fields are refused ----
-    @test_throws ArgumentError tangents!(P, batch(Ωs), random_fields(4), τ)
+    # ---- perturbations that are not whole blocks of the fields are refused, by their types ----
+    @test_throws MethodError tangents!(P, batch(Ωs), random_fields(4), τ)
+    @test_throws MethodError tangents!(P, batch(Ωs), V, τ)
+    @test_throws ArgumentError blocks(random_fields(4), 3)
 end
 
 @testset "another Reynolds number, and forced!   " begin
@@ -327,14 +329,14 @@ end
     # ---- a group of isometries: two shifts are their sum, 2π is none, and the inner product stays ----
     @test reldiff(shift!(P, shift!(P, copy(X), s), 1.2), shift!(P, copy(X), s + 1.2)) < 1e-14
     @test reldiff(shift!(P, copy(X), 2π), X) < 1e-14
-    @test dots(Xs, Xs) ≈ dots(X, X) rtol=1e-14
+    @test products(Xs, Xs) ≈ products(X, X) rtol=1e-14
 
     # ---- the generator is the derivative along x, the derivative of the shift, and antisymmetric ----
     D = dshift!(P, similar(X), X, 1)
     @test cpu(D) == cpu(KS.ddx!(similar(X), X))
     @test cpu(dshift!(P, similar(X), X)) == cpu(D)
     @test reldiff((shift!(P, copy(X), 1e-6) .- shift!(P, copy(X), -1e-6)) ./ 2e-6, D) < 1e-9
-    @test all(abs.(dots(D, X)) .< 1e-14 .* dots(X, X))
+    @test all(abs.(products(D, X)) .< 1e-14 .* products(X, X))
 end
 
 @testset "storage, built once and looked up      " begin
@@ -385,7 +387,7 @@ DEVICE == "cpu" && @testset "a batch cut among tasks                " begin
         for B in (5, tasks, 1)
             X = batch(Ωs[1:B])
             V = random_fields(B; seed=4)
-            W = random_fields(2B; seed=5)
+            W = blocks(random_fields(2B; seed=5), 2)
 
             @test reldiff(propagate!(P, copy(X), τ), propagate!(P₁, copy(X), τ)) < 1e-13
             @test reldiff(tangent!(P, copy(X), copy(V), τ), tangent!(P₁, copy(X), copy(V), τ)) < 1e-13

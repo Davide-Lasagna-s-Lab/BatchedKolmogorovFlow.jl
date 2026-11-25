@@ -36,9 +36,9 @@ end
     Ωs = okf_fields(4)
     Λs = okf_fields(4; seed=2, laminar=false)
     P  = KolmogorovPropagator(n, m, Re, kf; dt=dt, array=ARRAY)
-    z  = MultiVector(batch(Ωs), [2.0, 0.3]; dots=realdots)
-    v  = MultiVector(batch(Λs), [0.0, -0.2]; dots=realdots)
-    F  = Residual(P)
+    z  = MultiVector(batch(Ωs), [2.0, 0.3])
+    v  = MultiVector(batch(Λs), [0.0, -0.2])
+    F  = Residual(P, 2.0)
     J  = Jacobian(P, z)
 
     # ---- the inner product of the unknowns is that of the fields ----
@@ -48,7 +48,7 @@ end
     #      and the shift to rounding of the difference, the period up to the error of the scheme ----
     difference(v, ε) = (F(similar(z), z .+ ε .* v) .- F(similar(z), z .- ε .* v)) ./ (2ε)
     @test reldiff((J*v).X, difference(v, 1e-6).X) < 1e-7
-    w = MultiVector(fill!(similar(z.X), 0), [1.0, 0.0]; dots=realdots)
+    w = MultiVector(fill!(similar(z.X), 0), [1.0, 0.0])
     @test reldiff((J*w).X, difference(w, 1e-6).X) < 1e-4
 
     # ---- the phase conditions, in time and in space, in the inner product of the fields ----
@@ -62,14 +62,14 @@ end
     #      residual at the propagators of the family ----
     family(R) = KolmogorovPropagator(P, R)
     c = MultipleShooting._forced(P, z)
-    d = (Residual(family(Re + 1e-4))(similar(z), z) .- Residual(family(Re - 1e-4))(similar(z), z)) ./ 2e-4
+    d = (Residual(family(Re + 1e-4), 2.0)(similar(z), z) .- Residual(family(Re - 1e-4), 2.0)(similar(z), z)) ./ 2e-4
     @test reldiff(c.X, d.X) < 1e-4
 
     # ---- the bases of the subspace iteration are fields, orthonormal in the inner product ----
     Random.seed!(1)
     S = Subspace(P, z; k′=2)
     iterate!(S)
-    @test all(all(dots(S.V[a], S.V[a]) .≈ 1) for a in 1:2)
-    @test maximum(abs, dots(S.V[1], S.V[2])) < 1e-12
+    @test all(all(products(S.V[a], S.V[a]) .≈ 1) for a in 1:2)
+    @test maximum(abs, products(S.V[1], S.V[2])) < 1e-12
     @test all(reldiff(KS.apply_symmetry!(copy(S.V[a])), S.V[a]) < 1e-14 for a in 1:2)
 end

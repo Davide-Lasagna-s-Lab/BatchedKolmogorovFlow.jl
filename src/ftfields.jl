@@ -15,13 +15,19 @@
 # transposed: x runs along the first dimension, which is the one that the real-to-complex
 # transforms on the GPU halve. As there, the largest wavenumber is a parameter of the type. The
 # batch also holds its wavenumbers, computed once when it is made.
+#
+# A batch is an AbstractSeeds{M, K} of MultipleShooting.jl: its B = M K fields are K blocks of M,
+# one field of every block at each of M seeds. The seeds of an orbit, and every batch made here,
+# are one block, K = 1 and M = B; the k′ directions of a subspace step are k′ blocks, which
+# MultipleShooting.jl makes by rewrap.
 
 """
-    FTFields(data)
+    FTFields(data; k=1)
     FTFields(Ωs)
 
 A batch of `B` vorticity fields in Fourier space, with the largest wavenumber `n` in its type,
-`FTFields{n}`. It is an array of size `(n+1, 2n+1, B)`: `X[j+1, c, b]` is the coefficient of
+`FTFields{n, M, K}`, an `AbstractSeeds{M, K}` of MultipleShooting.jl: `K = k` blocks of
+`M = B/k` fields. It is an array of size `(n+1, 2n+1, B)`: `X[j+1, c, b]` is the coefficient of
 field `b` at the wavenumber `j = 0, …, n` along x and at the wavenumber `k` along y, with the
 columns `c` in the order `k = 0, 1, …, n, -n, …, -1`. It wraps the array of its coefficients, on
 the CPU or on the GPU, which `parent` returns, and broadcasts as that array does.
@@ -33,38 +39,57 @@ a row on the device of the coefficients, so that they broadcast against the batc
 
 # Arguments
 - `data`: the coefficients, a complex array `(n+1, 2n+1, B)`, kept, not copied.
+- `k::Int=1`: the number of blocks, as the k′ blocks of perturbations that [`tangents!`](@ref)
+  takes, one block for a batch of fields.
 - `Ωs`: or a vector of `B` fields of OpenKolmogorovFlow, `FTField{n, m}`, copied to a batch on
   the CPU. `FTField(X, b, m)` gives field `b` of a batch back.
 """
-struct FTFields{n, A<:AbstractArray{ComplexF64, 3}, W<:AbstractMatrix{Float64}} <: AbstractArray{ComplexF64, 3}
+struct FTFields{n, M, K, A<:AbstractArray{ComplexF64, 3}, W<:AbstractMatrix{Float64}} <: AbstractSeeds{M, K, ComplexF64, 3}
     data::A # the coefficients, (n+1, 2n+1, B)
        j::W # the wavenumbers along x of the rows, a column (n+1, 1): 0, …, n
        k::W # the wavenumbers along y of the columns, a row (1, 2n+1): 0, …, n, -n, …, -1
 
-    function FTFields(data::AbstractArray{ComplexF64, 3})
+    function FTFields(data::AbstractArray{ComplexF64, 3}; k::Int=1)
+        B = size(data, 3)
+
         # ---- input checks ----
         size(data, 2) == 2*size(data, 1) - 1 ||
             throw(ArgumentError("the coefficients must have size (n+1, 2n+1, B)"))
+        B % k == 0 ||
+            throw(ArgumentError("$(B) fields do not make $(k) blocks"))
 
         # ---- the largest wavenumber, from the number of rows ----
         n = size(data, 1) - 1
 
         # ---- the wavenumbers, computed once, on the device of the coefficients, copied there
         #      from vectors of Float64 on the CPU, which every array type takes ----
-        j = copyto!(similar(data, Float64, (n + 1, 1)), Float64[0:n;])
-        k = copyto!(similar(data, Float64, (1, 2n + 1)), Float64[0:n; -n:-1])
+        js = copyto!(similar(data, Float64, (n + 1, 1)), Float64[0:n;])
+        ks = copyto!(similar(data, Float64, (1, 2n + 1)), Float64[0:n; -n:-1])
 
-        return new{n, typeof(data), typeof(j)}(data,
-                                               j,
-                                               k)
+        return new{n, B ÷ k, k, typeof(data), typeof(js)}(data,
+                                                          js,
+                                                          ks)
     end
 
-    # a batch on other coefficients, with the wavenumbers of the batch X, shared and not copied
-    FTFields(data::AbstractArray{ComplexF64, 3}, X::FTFields{n}) where {n} =
-        new{n, typeof(data), typeof(X.j)}(data,
-                                          X.j,
-                                          X.k)
+    # a batch on other coefficients, in k blocks, with the wavenumbers of the batch X, shared and
+    # not copied
+    function FTFields(data::AbstractArray{ComplexF64, 3}, X::FTFields{n}; k::Int=1) where {n}
+        B = size(data, 3)
+
+        # ---- input checks ----
+        B % k == 0 ||
+            throw(ArgumentError("$(B) fields do not make $(k) blocks"))
+
+        return new{n, B ÷ k, k, typeof(data), typeof(X.j)}(data,
+                                                           X.j,
+                                                           X.k)
+    end
 end
+
+# a batch like X on other coefficients, in K blocks, and the inner product of the fields: what
+# MultipleShooting.jl asks of a batch
+rewrap(X::FTFields, data::AbstractArray{ComplexF64, 3}, K::Int) = FTFields(data, X; k=K)
+dots(X::FTFields, Y::FTFields)                                 = realdots(X, Y)
 
 
 # ---------------------------------------------------------------------------- #
@@ -111,14 +136,13 @@ Base.size(X::FTFields)   = size(X.data)
 Base.@propagate_inbounds Base.getindex(X::FTFields, I::Vararg{Int, 3}) = X.data[I...]
 Base.@propagate_inbounds Base.setindex!(X::FTFields, a, I::Vararg{Int, 3}) = (X.data[I...] = a)
 
-# a batch like X and a copy of it, with its wavenumbers
-Base.similar(X::FTFields) = FTFields(similar(X.data), X)
-Base.copy(X::FTFields)    = FTFields(copy(X.data), X)
+# a batch like X and a copy of it, with its wavenumbers and its blocks
+Base.similar(X::FTFields{n, M, K}) where {n, M, K} = FTFields(similar(X.data), X; k=K)
+Base.copy(X::FTFields{n, M, K}) where {n, M, K}    = FTFields(copy(X.data), X; k=K)
 
 # an array of another type or size on the device of X, as the fields on the grid; or, when the
 # type and the first two sizes are those of a batch, a batch of fields like those of X with the
-# wavenumbers of X, as MultipleShooting makes for the k directions of a subspace step packed
-# together
+# wavenumbers of X, in one block
 function Base.similar(X::FTFields{n}, ::Type{T}, dims::Dims) where {n, T}
     batch = T === ComplexF64 && length(dims) == 3 && dims[1:2] == (n + 1, 2n + 1)
     batch && return FTFields(similar(X.data, T, dims), X)
@@ -126,13 +150,12 @@ function Base.similar(X::FTFields{n}, ::Type{T}, dims::Dims) where {n, T}
     return similar(X.data, T, dims)
 end
 
-# the fields b of a batch, as a batch that shares its coefficients. `selectdim`, by which
-# MultipleShooting takes the first and the last seed, passes slices for the colons
+# the fields b of a batch, as a batch of one block that shares its coefficients. `selectdim`
+# passes slices for the colons
 Base.view(X::FTFields, ::Union{Colon, Base.Slice}, ::Union{Colon, Base.Slice}, b::AbstractUnitRange) =
     FTFields(view(X.data, :, :, b), X)
 
-# the operations that MultipleShooting makes on a batch besides broadcasting, each on the array
-# of the coefficients
+# the other operations on a batch besides broadcasting, each on the array of the coefficients
 Base.copyto!(X::FTFields, Y::FTFields) = (copyto!(X.data, Y.data); X)
 Base.fill!(X::FTFields, a)             = (fill!(X.data, a); X)
 Base.reverse!(X::FTFields; dims)       = (reverse!(X.data; dims=dims); X)
@@ -194,8 +217,8 @@ of the product of the two vorticity fields,
     c[1, 1, b] = ⟨ω₁ ω₂⟩ = Σⱼ Σₖ conj(Ω₁[j, k]) Ω₂[j, k],   j, k = -n, …, n,
 
 as `dot` of two fields of OpenKolmogorovFlow. `c` is a real array of size `(1, 1, B)` on the
-device of `X`, from one reduction: the form that `MultiVector(X, d; dots=realdots)` of
-MultipleShooting takes.
+device of `X`, from one reduction: the inner product `dots` of a batch of fields for
+MultipleShooting.jl.
 
 # Arguments
 - `X`, `Y`: two batches of fields of the same size.

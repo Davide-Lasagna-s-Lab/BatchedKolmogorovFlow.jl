@@ -64,21 +64,21 @@ end
     J₂ = plus(random_fields(3; seed=2), 1, junk(3; seed=2))
     S₁ = KS.apply_symmetry!(copy(J₁))
     @test cpu(KS.apply_symmetry!(copy(S₁))) == cpu(S₁)
-    @test dots(S₁, J₂) ≈ dots(J₁, KS.apply_symmetry!(copy(J₂))) rtol=1e-14
-    @test all(abs.(dots(plus(J₁, -1, S₁), S₁)) .< 1e-14 .* dots(J₁, J₁))
+    @test products(S₁, J₂) ≈ products(J₁, KS.apply_symmetry!(copy(J₂))) rtol=1e-14
+    @test all(abs.(products(plus(J₁, -1, S₁), S₁)) .< 1e-14 .* products(J₁, J₁))
 
     # ---- the inner product of OKF, field by field and summed, on views too ----
     Ψs = okf_fields(3; seed=3)
     Y  = batch(Ψs)
     c  = realdots(X, Y)
     @test size(c) == (1, 1, 3)
-    @test dots(X, Y) ≈ [dot(Ωs[i], Ψs[i]) for i in 1:3] rtol=1e-14
+    @test products(X, Y) ≈ [dot(Ωs[i], Ψs[i]) for i in 1:3] rtol=1e-14
     @test realdot(X, Y) ≈ sum(cpu(c))
     @test realdot(X, X) ≈ sum(norm(Ω)^2 for Ω in Ωs) rtol=1e-14
     @test realdot(X, X) ≈ Re * sum(OKF.dissrate(Ω, Re) for Ω in Ωs) rtol=1e-14
-    @test dots(view(X, :, :, 2:2), view(Y, :, :, 2:2))[1] ≈ cpu(c)[2]
+    @test products(view(X, :, :, 2:2), view(Y, :, :, 2:2))[1] ≈ cpu(c)[2]
 
     # ---- symmetric, and linear in each argument ----
-    @test dots(X, Y) ≈ dots(Y, X) rtol=1e-15
-    @test dots(plus(X, 2.5, Y), Y) ≈ dots(X, Y) .+ 2.5 .* dots(Y, Y) rtol=1e-14
+    @test products(X, Y) ≈ products(Y, X) rtol=1e-15
+    @test products(plus(X, 2.5, Y), Y) ≈ products(X, Y) .+ 2.5 .* products(Y, Y) rtol=1e-14
 end

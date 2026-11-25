@@ -38,9 +38,9 @@
 
     # ---- the advection conserves the enstrophy and the energy: it is orthogonal to ω and to ψ ----
     N = plus(dX, -1, F)
-    @test all(abs.(dots(N, X)) .< 1e-13 .* sqrt.(dots(N, N) .* dots(X, X)))
+    @test all(abs.(products(N, X)) .< 1e-13 .* sqrt.(products(N, N) .* products(X, X)))
     Ψ = KS.invlaplacian!(similar(X), X)
-    @test all(abs.(dots(N, Ψ)) .< 1e-13 .* sqrt.(dots(N, N) .* dots(Ψ, Ψ)))
+    @test all(abs.(products(N, Ψ)) .< 1e-13 .* sqrt.(products(N, N) .* products(Ψ, Ψ)))
 
     # ---- the tangent term is the derivative of the explicit one, which is quadratic, so that a
     #      centred difference of any size gives it to rounding ----
@@ -96,7 +96,7 @@ end
     dW = Ea(0.0, X, W, similar(W))
 
     # ---- the transpose of the tangent term in the inner product, field by field ----
-    @test all(relerr(dots(dV, W), dots(V, dW)) .< 1e-12)
+    @test all(relerr(products(dV, W), products(V, dW)) .< 1e-12)
 
     # ---- the adjoint term of OKF, the formula of the continuous adjoint, field by field ----
     for i in 1:4
