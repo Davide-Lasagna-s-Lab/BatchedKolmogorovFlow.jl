@@ -156,14 +156,17 @@ Advance in place by `τ` the fields `X` and the perturbations `V` together, each
 the tangent equation about its field, with the scheme and the steps of [`propagate!`](@ref), so
 that `V` becomes the derivative of the discrete flow applied to `V`.
 
-`V` holds k′ ≥ 1 blocks, one after the other, each of as many perturbations as `X` has fields,
-and every block is advanced about the fields of `X`: one block, a batch like `X`, for a product
-of the Jacobian of MultipleShooting.jl, and k′ for the directions of its subspace step. Every
+`V` is a batch like `X`, one perturbation of every field, for a product of the Jacobian of
+MultipleShooting.jl, or a vector of k′ such batches, the directions of its subspace step. Every
 field goes with its k′ perturbations in one batch, and is advanced once for all of them, so that
-the k′ directions cost one integration of the equation and k′ of its tangent. Block by block the
-result is that of `tangent!` on the block alone, to rounding.
+the k′ directions cost one integration of the equation and k′ of its tangent. Batch by batch the
+result is that of `tangent!` on the batch alone, to rounding.
 """
-tangent!(P::KolmogorovPropagator, X::FTFields, V::FTFields, τ::Real) = _advance!(P, X, V, τ)
+tangent!(P::KolmogorovPropagator, X::FTFields, V::FTFields, τ::Real) =
+    (_advance!(P, X, (V,), τ); V)
+
+tangent!(P::KolmogorovPropagator, X::FTFields, V::AbstractVector{<:FTFields}, τ::Real) =
+    _advance!(P, X, V, τ)
 
 """
     forced!(P::KolmogorovPropagator, X, V, τ) -> V
@@ -175,7 +178,7 @@ forcing as an explicit term, so that this is the derivative of the flow up to th
 scheme, not that of the discrete flow to rounding.
 """
 forced!(P::KolmogorovPropagator, X::FTFields, V::FTFields, τ::Real) =
-    _advance!(P, X, V, τ, term -> ForcedTangentTerm(term, P.Re))
+    (_advance!(P, X, (V,), τ, term -> ForcedTangentTerm(term, P.Re)); V)
 
 """
     stages(P::KolmogorovPropagator, X, τ) -> S
@@ -358,8 +361,8 @@ function _storage(P::KolmogorovPropagator, B::Int, c::Int=1)
     end
 end
 
-# The storage of the tangent equation of task c for B fields with K perturbations, as many as the
-# fields or k′ blocks of as many: in P.tangents[c] under the key (B, K), built once, at the first
+# The storage of the tangent equation of task c for B fields with K perturbations, k′ batches of
+# as many as the fields: in P.tangents[c] under the key (B, K), built once, at the first
 # call of tangent! with these sizes. The fields and their perturbations are advanced
 # as one batch, the bundle of linearised.jl, in which every field is followed by its k′
 # perturbations.
@@ -393,16 +396,16 @@ end
 # fields advanced with their perturbations                                     #
 # ---------------------------------------------------------------------------- #
 
-# the fields X advanced by τ, and the perturbations V with them, as many as the fields or k′ blocks
-# of as many, by the tangent equation, with the explicit term `wrap(term)` of its storage: what
-# tangent! and forced! do
-function _advance!(P::KolmogorovPropagator, X::FTFields, V::FTFields, τ::Real, wrap=identity)
+# the fields X advanced by τ, and the perturbations V with them, k′ batches of as many as the
+# fields, a vector or a tuple, by the tangent equation, with the explicit term `wrap(term)` of its
+# storage: what tangent! and forced! do
+function _advance!(P::KolmogorovPropagator, X::FTFields, V, τ::Real, wrap=identity)
     # ---- input checks ----
-    size(V, 3) % size(X, 3) == 0 ||
-        throw(ArgumentError("the perturbations must be whole blocks of as many as the fields"))
+    all(v -> size(v, 3) == size(X, 3), V) ||
+        throw(ArgumentError("every batch of perturbations must have as many as the fields"))
 
     B  = size(X, 3)
-    k′ = size(V, 3) ÷ B
+    k′ = length(V)
 
     # ---- every task advances its chunk of the fields, each with its perturbations: with one
     #      task, the whole batch ----

@@ -106,7 +106,7 @@ not run at the same time.
 | function | what it does |
 |---|---|
 | `propagate!(P, X, τ)` | advances every field of `X` in place by `τ`, in steps of `dt` and a last shorter step that ends on `τ` |
-| `tangent!(P, X, V, τ)` | advances the fields `X` and the perturbations `V` together, `V` by the tangent equation, with the same scheme and steps: the derivative of the discrete flow. `V` holds `k′ ≥ 1` blocks of perturbations, one after the other, each about the fields of `X`, which are advanced once for all the blocks |
+| `tangent!(P, X, V, τ)` | advances the fields `X` and the perturbations `V` together, `V` by the tangent equation, with the same scheme and steps: the derivative of the discrete flow. `V` is a batch like `X`, or a vector of `k′` such batches, each about the fields of `X`, which are advanced once for all of them |
 | `forced!(P, X, V, τ)` | as `tangent!`, with the tangent equation forced by the derivative of the right-hand side in the Reynolds number, `-Δω/Re²` |
 | `rhs!(P, F, X)` | the time derivative of every field |
 | `shift!(P, X, s)` | `ω(x, y) → ω(x + s, y)` for every field, the coefficients times `cis(j s)` |

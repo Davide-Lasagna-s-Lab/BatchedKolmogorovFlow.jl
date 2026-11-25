@@ -29,36 +29,32 @@ function _parts(Z::AbstractArray, k′::Int)
 end
 
 # The fields `fields` of X, all of them or those of the chunk of a task, and their perturbations in V
-# written into the bundle Z. V holds k′ blocks, one after the other, each of as many perturbations
-# as X has fields: block a is perturbation a of every field, as MultipleShooting.jl packs the
-# directions of a subspace step.
-function _bundle!(Z::FTFields, X::FTFields, V::FTFields, fields::UnitRange{Int}=1:size(X, 3))
-    B      = size(X, 3)
-    k′     = size(V, 3) ÷ B
-    Ω, Λ   = _parts(Z, k′)
-    blocks = reshape(parent(V), size(V, 1), size(V, 2), B, k′)
+# written into the bundle Z. V holds k′ batches like X, a vector or a tuple of them: V[a] is
+# perturbation a of every field, as MultipleShooting.jl hands over the directions of a subspace
+# step.
+function _bundle!(Z::FTFields, X::FTFields, V, fields::UnitRange{Int}=1:size(X, 3))
+    k′   = length(V)
+    Ω, Λ = _parts(Z, k′)
 
-    # ---- every field, and block a of the perturbations in place a after the fields ----
+    # ---- every field, and its perturbation a in place a after the fields ----
     view(Ω, :, :, 1, :) .= view(parent(X), :, :, fields)
     for a in 1:k′
-        view(Λ, :, :, a, :) .= view(blocks, :, :, fields, a)
+        view(Λ, :, :, a, :) .= view(parent(V[a]), :, :, fields)
     end
 
     return Z
 end
 
 # The fields of the bundle Z written into the fields `fields` of X, and their perturbations into
-# the same places of the k′ blocks of V
-function _unbundle!(X::FTFields, V::FTFields, Z::FTFields, fields::UnitRange{Int}=1:size(X, 3))
-    B      = size(X, 3)
-    k′     = size(V, 3) ÷ B
-    Ω, Λ   = _parts(Z, k′)
-    blocks = reshape(parent(V), size(V, 1), size(V, 2), B, k′)
+# the same places of the k′ batches of V
+function _unbundle!(X::FTFields, V, Z::FTFields, fields::UnitRange{Int}=1:size(X, 3))
+    k′   = length(V)
+    Ω, Λ = _parts(Z, k′)
 
-    # ---- every field, and place a after the fields into block a of the perturbations ----
+    # ---- every field, and place a after the fields into its perturbation a ----
     view(parent(X), :, :, fields) .= view(Ω, :, :, 1, :)
     for a in 1:k′
-        view(blocks, :, :, fields, a) .= view(Λ, :, :, a, :)
+        view(parent(V[a]), :, :, fields) .= view(Λ, :, :, a, :)
     end
 
     return V

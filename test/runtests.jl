@@ -95,14 +95,18 @@ end
 # the batch X + a Y
 plus(X, a, Y) = FTFields(X .+ a .* Y)
 
+# the k′ blocks of as many fields as X of the batch V, one after the other, as a vector of
+# batches that share them: the directions that tangent! takes
+directions(X, V) = [view(V, :, :, (a - 1)*size(X, 3) .+ (1:size(X, 3))) for a in 1:(size(V, 3) ÷ size(X, 3))]
+
 # the bundle of the fields X with their perturbations V, k′ blocks of as many, and the fields and
 # the perturbations of a bundle Z of B fields, as two batches
-bundle(X, V) = KS._bundle!(dev(FTFields(zeros(ComplexF64, n + 1, 2n + 1, size(X, 3) + size(V, 3)))), X, V)
+bundle(X, V) = KS._bundle!(dev(FTFields(zeros(ComplexF64, n + 1, 2n + 1, size(X, 3) + size(V, 3)))), X, directions(X, V))
 
 function unbundle(Z, B)
     X = dev(FTFields(zeros(ComplexF64, n + 1, 2n + 1, B)))
     V = dev(FTFields(zeros(ComplexF64, n + 1, 2n + 1, size(Z, 3) - B)))
-    KS._unbundle!(X, V, Z)
+    KS._unbundle!(X, directions(X, V), Z)
 
     return X, V
 end
