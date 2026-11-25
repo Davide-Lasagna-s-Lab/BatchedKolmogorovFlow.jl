@@ -9,8 +9,8 @@
 # dictionary, propagatordict.jl.
 #
 # The file has three parts: the propagator; the methods of the interface, which are what a search
-# calls; then what serves them, the tasks of a propagator on the CPU and the advance of fields with
-# their perturbations.
+# calls, with the advance of the fields with their perturbations that tangent! and forced! share;
+# then the tasks of a propagator on the CPU.
 
 """
     KolmogorovPropagator(n, m, Re, kf; B, k′=0, dt=0.01, scheme=:CB3R2R3e, device=:cpu, tasks=1,
@@ -213,22 +213,22 @@ function propagate!(P::KolmogorovPropagator, X::FTFields, τ::Real)
 
     # ---- every task advances its chunk of the fields: with one task, the whole batch ----
     _foreach_task(P) do task
-        w     = task.equation
-        chunk = view(X, :, :, task.fields)
+        equation = task.equation
+        chunk    = view(X, :, :, task.fields)
 
         # ---- the flow of the equation, at the Reynolds number of P ----
-        ϕ = Flows.flow(w.explicit,
+        ϕ = Flows.flow(equation.explicit,
                        ImplicitTerm(P.Re),
-                       w.scheme,
+                       equation.scheme,
                        Flows.TimeStepConstant(P.dt))
 
         # ---- the fields of the chunk in the workspace of the flow, with the symmetry of
         #      fields ----
-        apply_symmetry!(copyto!(w.X, chunk))
+        apply_symmetry!(copyto!(equation.X, chunk))
 
         # ---- advanced, and back ----
-        ϕ(w.X, (0, τ))
-        copyto!(chunk, w.X)
+        ϕ(equation.X, (0, τ))
+        copyto!(chunk, equation.X)
     end
 
     return X
@@ -266,6 +266,38 @@ derivative of the flow up to the error of the scheme, not that of the discrete f
 forced!(P::KolmogorovPropagator, X::FTFields, V::FTFields, τ::Real) =
     (_advance!(P, X, (V,), τ, term -> ForcedTangentTerm(term, P.Re)); V)
 
+# the fields X advanced by τ, and the perturbations V with them, k′ batches of as many as the
+# fields, a vector or a tuple, by the tangent equation, with the explicit term `wrap(term)` of
+# the workspace: what tangent! and forced! do
+function _advance!(P::KolmogorovPropagator, X::FTFields, V, τ::Real, wrap=identity)
+    # ---- input checks ----
+    _check(P, size(X, 3), length(V))
+    all(v -> size(v, 3) == size(X, 3), V) ||
+        throw(ArgumentError("every batch of perturbations must have as many as the fields"))
+
+    # ---- every task advances its chunk of the fields, each with its perturbations: with one
+    #      task, the whole batch ----
+    _foreach_task(P) do task
+        tangent = task.tangent
+
+        # ---- the flow of the equation with its tangent, at the Reynolds number of P ----
+        ϕ = Flows.flow(wrap(tangent.term),
+                       ImplicitTerm(P.Re),
+                       tangent.scheme,
+                       Flows.TimeStepConstant(P.dt))
+
+        # ---- every field of the chunk with its perturbations in the bundle of the flow, with
+        #      the symmetry of fields ----
+        apply_symmetry!(_bundle!(tangent.Z, X, V, task.fields))
+
+        # ---- advanced together, the fields once, and back ----
+        ϕ(tangent.Z, (0, τ))
+        _unbundle!(X, V, tangent.Z, task.fields)
+    end
+
+    return V
+end
+
 """
     stages(P::KolmogorovPropagator, X, τ) -> S
 
@@ -282,20 +314,20 @@ function stages(P::KolmogorovPropagator, X::FTFields, τ::Real)
     # ---- input checks ----
     _check(P, size(X, 3))
 
-    w = P.whole
+    equation = P.whole
 
     # ---- the flow of the equation, at the Reynolds number of P ----
-    ϕ = Flows.flow(w.explicit,
+    ϕ = Flows.flow(equation.explicit,
                    ImplicitTerm(P.Re),
-                   w.scheme,
+                   equation.scheme,
                    Flows.TimeStepConstant(P.dt))
 
     # ---- the fields in the workspace of the flow, with the symmetry of fields ----
-    apply_symmetry!(copyto!(w.X, X))
+    apply_symmetry!(copyto!(equation.X, X))
 
     # ---- advanced, the stages of every step kept, in copies that Flows.jl makes ----
-    S = Flows.RAMStageCache(Flows.nstages(w.scheme), w.X)
-    ϕ(w.X, (0, τ), S)
+    S = Flows.RAMStageCache(Flows.nstages(equation.scheme), equation.X)
+    ϕ(equation.X, (0, τ), S)
 
     return S
 end
@@ -323,22 +355,23 @@ function LinearAlgebra.adjoint!(P::KolmogorovPropagator, S::Flows.RAMStageCache,
     P.adjoint === nothing &&
         throw(ArgumentError("the propagator was made without the adjoint: adjoint=true"))
 
-    w    = P.whole
-    back = P.adjoint
+    equation = P.whole
+    backward = P.adjoint
 
     # ---- the flow of the adjoint equation back over the stages, at the Reynolds number of P ----
-    ψ = Flows.flow(back.term,
+    ψ = Flows.flow(backward.term,
                    ImplicitTerm(P.Re),
-                   back.scheme,
+                   backward.scheme,
                    Flows.TimeStepFromCache())
 
-    # ---- the adjoint fields in the workspace of the flow, with the symmetry of fields ----
-    apply_symmetry!(copyto!(w.V, W))
+    # ---- the adjoint fields in the second batch of the workspace of the equation, with the
+    #      symmetry of fields ----
+    apply_symmetry!(copyto!(equation.V, W))
 
     # ---- back over the stages, from the last step to the first ----
-    ψ(w.V, S)
+    ψ(equation.V, S)
 
-    return copyto!(W, w.V)
+    return copyto!(W, equation.V)
 end
 
 """
@@ -351,18 +384,18 @@ function rhs!(P::KolmogorovPropagator, F::FTFields, X::FTFields)
     # ---- input checks ----
     _check(P, size(X, 3))
 
-    w = P.whole
+    equation = P.whole
 
-    # ---- the fields in the workspace of the propagator, with the symmetry of fields ----
-    Ω = apply_symmetry!(copyto!(w.X, X))
+    # ---- the fields in the workspace of the equation, with the symmetry of fields ----
+    Ω = apply_symmetry!(copyto!(equation.X, X))
 
-    # ---- advection and forcing ----
-    w.explicit(0.0, Ω, w.V)
+    # ---- advection and forcing, into its second batch ----
+    equation.explicit(0.0, Ω, equation.V)
 
     # ---- plus the viscous term, Δω/Re ----
-    w.V .-= (Ω.j.^2 .+ Ω.k.^2) .* Ω ./ P.Re
+    equation.V .-= (Ω.j.^2 .+ Ω.k.^2) .* Ω ./ P.Re
 
-    return copyto!(F, w.V)
+    return copyto!(F, equation.V)
 end
 
 """
@@ -425,41 +458,4 @@ function _foreach_task(f, P::KolmogorovPropagator)
     end
 
     return nothing
-end
-
-
-# ---------------------------------------------------------------------------- #
-# fields advanced with their perturbations                                     #
-# ---------------------------------------------------------------------------- #
-
-# the fields X advanced by τ, and the perturbations V with them, k′ batches of as many as the
-# fields, a vector or a tuple, by the tangent equation, with the explicit term `wrap(term)` of
-# the workspace: what tangent! and forced! do
-function _advance!(P::KolmogorovPropagator, X::FTFields, V, τ::Real, wrap=identity)
-    # ---- input checks ----
-    _check(P, size(X, 3), length(V))
-    all(v -> size(v, 3) == size(X, 3), V) ||
-        throw(ArgumentError("every batch of perturbations must have as many as the fields"))
-
-    # ---- every task advances its chunk of the fields, each with its perturbations: with one
-    #      task, the whole batch ----
-    _foreach_task(P) do task
-        w = task.tangent
-
-        # ---- the flow of the equation with its tangent, at the Reynolds number of P ----
-        ϕ = Flows.flow(wrap(w.term),
-                       ImplicitTerm(P.Re),
-                       w.scheme,
-                       Flows.TimeStepConstant(P.dt))
-
-        # ---- every field of the chunk with its perturbations in the bundle of the flow, with
-        #      the symmetry of fields ----
-        apply_symmetry!(_bundle!(w.Z, X, V, task.fields))
-
-        # ---- advanced together, the fields once, and back ----
-        ϕ(w.Z, (0, τ))
-        _unbundle!(X, V, w.Z, task.fields)
-    end
-
-    return V
 end
