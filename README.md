@@ -21,9 +21,9 @@ A field is real and periodic on `[0, 2π)²`, with the Fourier coefficients
     ω(x, y) = Σⱼ Σₖ Ω[j, k] exp(i (j x + k y)),   j, k = -n, …, n.
 
 Only the coefficients with `j ≥ 0` are kept, the others being their conjugates.
-A batch of `B` fields is an `FTFields{n, M, K}`, an array `X` of size
-`(n+1, 2n+1, B)`, and an `AbstractSeeds{M, K}` of MultipleShooting: `K` blocks
-of `M` fields, one block unless `FTFields(data; k=K)` says otherwise. Field `b` is `X[:, :, b]`, with `j = 0, …, n` along `x` down
+A batch of `B` fields is an `FTFields{n, M, L}`, an array `X` of size
+`(n+1, 2n+1, B)`, and an `AbstractSeeds{M, L}` of MultipleShooting: `L` blocks
+of `M` fields, one block unless `FTFields(data; L=L)` says otherwise. Field `b` is `X[:, :, b]`, with `j = 0, …, n` along `x` down
 the rows and `k` along `y` across the columns, in the order
 `0, 1, …, n, -n, …, -1`. Two conditions make such a slice a field: in the row
 `j = 0` the entries at `k` and `-k` are conjugates, and the mean is zero.
@@ -172,7 +172,7 @@ over the same `S`.
 using MultipleShooting
 
 z = MultiVector(X, [T, s])                     # X an FTFields, the seeds
-F = Residual(P, T)
+F = Residual(P)
 J = Jacobian(P, z)
 ```
 

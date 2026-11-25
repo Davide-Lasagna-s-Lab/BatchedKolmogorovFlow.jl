@@ -38,7 +38,7 @@ end
     P  = KolmogorovPropagator(n, m, Re, kf; dt=dt, array=ARRAY)
     z  = MultiVector(batch(Ωs), [2.0, 0.3])
     v  = MultiVector(batch(Λs), [0.0, -0.2])
-    F  = Residual(P, 2.0)
+    F  = Residual(P)
     J  = Jacobian(P, z)
 
     # ---- the inner product of the unknowns is that of the fields ----
@@ -62,7 +62,7 @@ end
     #      residual at the propagators of the family ----
     family(R) = KolmogorovPropagator(P, R)
     c = MultipleShooting._forced(P, z)
-    d = (Residual(family(Re + 1e-4), 2.0)(similar(z), z) .- Residual(family(Re - 1e-4), 2.0)(similar(z), z)) ./ 2e-4
+    d = (Residual(family(Re + 1e-4))(similar(z), z) .- Residual(family(Re - 1e-4))(similar(z), z)) ./ 2e-4
     @test reldiff(c.X, d.X) < 1e-4
 
     # ---- the bases of the subspace iteration are fields, orthonormal in the inner product ----

@@ -96,7 +96,7 @@ end
 plus(X, a, Y) = FTFields(X .+ a .* Y)
 
 # the batch V as k blocks of perturbations, for tangents!
-blocks(V, k) = FTFields(parent(V); k=k)
+blocks(V, k) = FTFields(parent(V); L=k)
 
 # the bundle of the fields X with their perturbations V, k′ blocks of as many, and the fields and
 # the perturbations of a bundle Z of B fields, as two batches
