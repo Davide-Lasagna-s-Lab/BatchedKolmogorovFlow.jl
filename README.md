@@ -69,8 +69,7 @@ tasks. The other functions run on one. Start Julia with at least `N` threads,
 | `fft.jl` | `InverseFFT!` and `ForwardFFT!`, between the two |
 | `implicit.jl` | `ImplicitTerm`, the viscous term |
 | `nonlinear.jl` | `ExplicitTerm`, advection and forcing |
-| `linearised.jl` | `TangentTerm`, the linearised advection, and `ForcedTangentTerm` |
-| `adjoint.jl` | `AdjointTerm`, the transpose of the linearised advection |
+| `linearised.jl` | `TangentTerm`, the linearised advection, `ForcedTangentTerm`, and `AdjointTerm`, its transpose |
 | `propagator.jl` | `KolmogorovPropagator`, the methods of MultipleShooting and `adjoint!`, then what serves them: the tasks, the storage |
 
 The advection is written in the form of Basdevant (1983),

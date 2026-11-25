@@ -46,7 +46,6 @@ include("fft.jl")
 include("implicit.jl")
 include("nonlinear.jl")
 include("linearised.jl")
-include("adjoint.jl")
 include("propagator.jl")
 
 end
