@@ -46,33 +46,37 @@ Flows.ImcA!(L::ImplicitTerm, c::Real, Y::FTFields, Z::FTFields) = invlaplacian!(
 
 # The exponential schemes of Flows.jl integrate the linear part exactly, through the coefficients
 # exp(L) and the φ functions of L = Δt Δ/Re, here a diagonal, mode by mode. They are those of
-# Flows.jl for a Diagonal, computed on the device of the batches, by broadcasting, as the
-# coefficients of a scheme fill batches like the state: an array (n+1, 2n+1) broadcasts against a
-# batch of any number of fields, and against a bundle of fields with their perturbations.
+# Flows.jl for a Diagonal, given as lazy broadcasts over the diagonal Δ, (n+1, 2n+1) on the device:
+# Flows.jl writes each into a batch of its registers, `c .= v`, which evaluates it there, against
+# a batch of any number of fields or a bundle of fields with their perturbations, with no array
+# made in between. The coefficients change with the step, at the shorter last step of every
+# call, so that this keeps a call from allocating arrays of the size of the batch.
 
 function Flows.etdrk2_coeffs(A::ImplicitTerm, Δt::Real)
-    # ---- L = Δt Δ/Re, on every mode ----
-    L = Δt .* A.Δ ./ A.Re
+    # ---- a function of L = Δt Δ/Re, on every mode, lazily ----
+    c        = Δt/A.Re
+    modes(f) = Broadcast.broadcasted(d -> f(c*d), A.Δ)
 
     # ---- exp(L), Δt φ₁(L) and Δt φ₂(L) ----
-    E  = exp.(L)
-    f1 = Δt .* _contour.(z -> (exp(z) - 1) / z,       L)
-    f2 = Δt .* _contour.(z -> (exp(z) - 1 - z) / z^2, L)
+    E  = modes(l -> exp(l))
+    f1 = modes(l -> Δt*_contour(z -> (exp(z) - 1) / z,       l))
+    f2 = modes(l -> Δt*_contour(z -> (exp(z) - 1 - z) / z^2, l))
 
     return (E, f1, f2)
 end
 
 function Flows.etdrk4_coeffs(A::ImplicitTerm, Δt::Real)
-    # ---- L = Δt Δ/Re, on every mode ----
-    L = Δt .* A.Δ ./ A.Re
+    # ---- a function of L = Δt Δ/Re, on every mode, lazily ----
+    c        = Δt/A.Re
+    modes(f) = Broadcast.broadcasted(d -> f(c*d), A.Δ)
 
     # ---- the coefficients of Cox & Matthews (2002) ----
-    E  = exp.(L)
-    E2 = exp.(L ./ 2)
-    Q  = Δt .* _contour.(z -> (exp(z/2) - 1) / z,                      L)
-    f1 = Δt .* _contour.(z -> (-4 - z + exp(z)*(4 - 3z + z^2)) / z^3,  L)
-    f2 = Δt .* _contour.(z -> ( 2 + z + exp(z)*(-2 + z)) / z^3,        L)
-    f3 = Δt .* _contour.(z -> (-4 - 3z - z^2 + exp(z)*(4 - z)) / z^3,  L)
+    E  = modes(l -> exp(l))
+    E2 = modes(l -> exp(l/2))
+    Q  = modes(l -> Δt*_contour(z -> (exp(z/2) - 1) / z,                     l))
+    f1 = modes(l -> Δt*_contour(z -> (-4 - z + exp(z)*(4 - 3z + z^2)) / z^3, l))
+    f2 = modes(l -> Δt*_contour(z -> ( 2 + z + exp(z)*(-2 + z)) / z^3,       l))
+    f3 = modes(l -> Δt*_contour(z -> (-4 - 3z - z^2 + exp(z)*(4 - z)) / z^3, l))
 
     return (E, E2, Q, f1, f2, f3)
 end

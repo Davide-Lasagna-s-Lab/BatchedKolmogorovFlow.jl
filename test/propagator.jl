@@ -274,8 +274,15 @@ end
         @test reldiff(D, L(copy(X), copy(V), τ)) < 1e-7
     end
 
-    # ---- with no stages and no discrete adjoint in Flows.jl ----
-    @test_throws ArgumentError AdjointPropagator(n, m, Re; B=3, scheme=:ETDRK4, device=DEVICE)
+    # ---- the adjoint, over the stages of the flow, is the transpose of the tangent ----
+    W = random_fields(3; seed=6)
+    for name in (:ETDRK2, :ETDRK4)
+        L  = TangentPropagator(n, m, Re, kf; B=3, dt=dt, scheme=name, device=DEVICE)
+        A  = AdjointPropagator(n, m, Re; B=3, scheme=name, device=DEVICE)
+        ψV = L(copy(X), copy(V), τ)
+        ψW = A(copy(W), stages(G(name, dt), X, τ))
+        @test all(relerr(products(ψV, W), products(V, ψW)) .< 1e-10)
+    end
 end
 
 @testset "the tangent, batches about the same fields" begin
@@ -404,6 +411,19 @@ end
     P.A(W, S)
     @test allocated(() -> stages(P.G, X, 3dt)) < 4*3*allocated(() -> copy(X)) + one/10
     @test allocated(() -> P.A(W, S)) < one/10
+
+    # ---- with the exponential schemes too, over a span with a shorter last step, at which the
+    #      coefficients are made again, as lazy broadcasts, written into the registers with no
+    #      array in between: the flow, the tangent, the stages and the adjoint ----
+    for (name, coeffs) in ((:ETDRK2, Flows.etdrk2_coeffs), (:ETDRK4, Flows.etdrk4_coeffs))
+        E = dynamics(256; scheme=name)
+        @test all(c -> c isa Broadcast.Broadcasted, coeffs(KS.ImplicitTerm(X, Re), dt))
+        @test allocated(() -> E.G(X, 2.5dt)) < one/10
+        @test allocated(() -> E.L(X, V, 2.5dt)) < one/10
+        S = stages(E.G, X, 2.5dt)
+        E.A(W, S)
+        @test allocated(() -> E.A(W, S)) < one/10
+    end
 end
 
 # several tasks advance a batch on the CPU, a chunk of its fields each: the results are those of one task

@@ -122,9 +122,9 @@ A  = AdjointPropagator(n, m, Re; B, scheme=:CB3R2R3e, device=:cpu)
 ```
 
 `scheme` is a key of `Flows.imex_schemes`: `:CNRK2`, `:CB3R2R2`, `:CB3R2R3e`,
-`:CB3R2R3c` or `:CB4R3R4`, or the exponential `:ETDRK2` or `:ETDRK4`, which keep
-no stages and have no adjoint. `device` and `tasks` are those of the section
-above. `B` has no default, and `kf` is in `1:n`.
+`:CB3R2R3c` or `:CB4R3R4`, or the exponential `:ETDRK2` or `:ETDRK4`, all with
+their stages and their discrete adjoint. `device` and `tasks` are those of the
+section above. `B` has no default, and `kf` is in `1:n`.
 
 Each object has one task, which it does when called, on batches of `B` fields,
 and holds the workspaces of that task, made with it, so that a call allocates
