@@ -113,15 +113,4 @@ end
     X₃  = dev(FTFields(cpu(X)[:, :, 3:3]))
     Ea₁ = KS.AdjointTerm(X₃, m)
     @test reldiff(Ea₁(0.0, X₃, view(W, :, :, 3:3), similar(X₃)), cpu(dW)[:, :, 3:3]) < 1e-14
-
-    # ---- its first step, against advection!: the transforms P and Q of the products, here V and X ----
-    P̃, Q̃ = KS.advection_transpose!(similar(X), similar(X), W)
-    @test dots(KS.advection!(similar(X), V, X), W) ≈ dots(V, P̃) .+ dots(X, Q̃) rtol=1e-13
-
-    # ---- its last step, against the velocity of a perturbation V in Fourier space,
-    #      -∂/∂y Δ⁻¹ V and ∂/∂x Δ⁻¹ V, here against W and X ----
-    U   = KS.invlaplacian!(similar(X), KS.ddy!(similar(X), V))
-    U .*= -1
-    U′  = KS.invlaplacian!(similar(X), KS.ddx!(similar(X), V))
-    @test dots(U, W) .+ dots(U′, X) ≈ dots(V, KS.velocity_transpose!(similar(X), copy(W), copy(X))) rtol=1e-13
 end

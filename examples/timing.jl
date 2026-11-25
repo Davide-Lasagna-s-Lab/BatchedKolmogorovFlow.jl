@@ -16,7 +16,7 @@ using Printf
 using FFTW
 using Flows
 using OpenKolmogorovFlow
-using KolmogorovShootingGPU
+using BatchedKolmogorovFlow
 
 const DEVICE = length(ARGS) > 0 ? ARGS[1] : "cpu"
 const TAU    = length(ARGS) > 1 ? parse(Float64, ARGS[2]) : 10.0
@@ -65,6 +65,7 @@ for B in BS
     @printf "%s tangent!   of %5d pairs  over τ = %g: %9.3f s, %.4f s per pair,  %6.3f × OKF\n" DEVICE B TAU t t/B t/(B*t_okf)
 
     # free the work arrays of this size before the next one
-    empty!(P.cache)
+    foreach(empty!, P.cache)
+    foreach(empty!, P.tangents)
     GC.gc()
 end

@@ -18,29 +18,6 @@
 # the exact transpose of TangentTerm, to rounding, and, as the products have no aliasing, the
 # operator above.
 
-# the transpose of advection!: the transforms of the two products, P of u v′ + u′ v and Q of
-# 2 (v v′ - u u′), from the adjoint fields Λ, each with the multiplier it has in advection!
-function advection_transpose!(P::FTFields, Q::FTFields, Λ::FTFields)
-    # ---- -(∂²/∂x² - ∂²/∂y²) is j² - k² and -∂²/∂x∂y is j k on every mode, real multipliers that
-    #      are their own transposes ----
-    P .= (Λ.j.^2 .- Λ.k.^2) .* Λ
-    Q .= Λ.j .* Λ.k .* Λ
-
-    return P, Q
-end
-
-# the transpose of the velocity of a perturbation, u′ = -∂ψ′/∂y and v′ = ∂ψ′/∂x with Δψ′ = λ,
-# from the transforms U′ and V′ of what stands in its place: Δ⁻¹(∂U′/∂y - ∂V′/∂x)
-function velocity_transpose!(dΛdt::FTFields, U′::FTFields, V′::FTFields)
-    # ---- ∂/∂x and ∂/∂y are i j and i k, whose conjugates are -i j and -i k, and Δ⁻¹ is real: the
-    #      transpose of -∂/∂y Δ⁻¹ is ∂/∂y Δ⁻¹, and that of ∂/∂x Δ⁻¹ is -∂/∂x Δ⁻¹ ----
-    ddy!(U′, U′)
-    ddx!(V′, V′)
-    dΛdt .= U′ .- V′
-
-    return invlaplacian!(dΛdt, dΛdt)
-end
-
 """
     AdjointTerm(X, m)
 
@@ -98,28 +75,47 @@ struct AdjointTerm{FT<:FTFields, F<:Fields, IT, FFT}
 end
 
 function (eq::AdjointTerm)(t::Real, Ω::FTFields, Λ::FTFields, dΛdt::FTFields)
+    U, V   = eq.U, eq.V
+    P, Q   = eq.P, eq.Q
     u, v   = eq.u, eq.v
     u′, v′ = eq.u′, eq.v′
     p, q   = eq.p, eq.q
 
-    # ---- the velocity of the fields, on the grid, as in the tangent term ----
-    velocity!(u, v, Ω, eq.U, eq.V, eq.ifft!)
+    # ---- the velocity of the fields, in Fourier space and then on the grid, as in the tangent
+    #      term ----
+    ddy!(U, Ω)
+    invlaplacian!(U, U)
+    U .*= -1
+    ddx!(V, Ω)
+    invlaplacian!(V, V)
+    eq.ifft!(u, U)
+    eq.ifft!(v, V)
 
-    # ---- the transpose of the advection ----
-    advection_transpose!(eq.P, eq.Q, Λ)
+    # ---- the transpose of the advection: the adjoint fields in the places of the transforms of
+    #      the two products, each with the multiplier it has there, j² - k² and j k, which are
+    #      real and their own transposes ----
+    P .= (Λ.j.^2 .- Λ.k.^2) .* Λ
+    Q .= Λ.j .* Λ.k .* Λ
 
     # ---- the transpose of the forward transforms of the products: the inverse ones ----
-    eq.ifft!(p, eq.P)
-    eq.ifft!(q, eq.Q)
+    eq.ifft!(p, P)
+    eq.ifft!(q, Q)
 
     # ---- the transpose of the products u v′ + u′ v and 2 (v v′ - u u′) in (u′, v′), point by point ----
     u′ .= v .* p .- 2 .* u .* q
     v′ .= u .* p .+ 2 .* v .* q
 
     # ---- the transpose of the inverse transforms of the velocity: the forward ones ----
-    eq.fft!(eq.U, u′)
-    eq.fft!(eq.V, v′)
+    eq.fft!(U, u′)
+    eq.fft!(V, v′)
 
-    # ---- the transpose of the velocity of the perturbations ----
-    return velocity_transpose!(dΛdt, eq.U, eq.V)
+    # ---- the transpose of the velocity of a perturbation, u′ = -∂ψ′/∂y and v′ = ∂ψ′/∂x with
+    #      Δψ′ = λ: Δ⁻¹(∂U/∂y - ∂V/∂x). The conjugates of i j and i k are -i j and -i k and Δ⁻¹
+    #      is real, so that the transpose of -∂/∂y Δ⁻¹ is ∂/∂y Δ⁻¹ and that of ∂/∂x Δ⁻¹ is
+    #      -∂/∂x Δ⁻¹ ----
+    ddy!(U, U)
+    ddx!(V, V)
+    dΛdt .= U .- V
+
+    return invlaplacian!(dΛdt, dΛdt)
 end

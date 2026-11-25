@@ -11,33 +11,6 @@
 # an identity for a velocity without divergence. It needs the velocity alone on the grid, two
 # inverse transforms and two forward ones, where the left side needs four and one.
 
-# the velocity (u, v) of the fields Ω on the grid, with U and V its storage in Fourier space
-function velocity!(u::Fields, v::Fields, Ω::FTFields, U::FTFields, V::FTFields, ifft!::InverseFFT!)
-    # ---- u = -∂ψ/∂y, with the stream function ψ = Δ⁻¹ω ----
-    ddy!(U, Ω)
-    invlaplacian!(U, U)
-    U .*= -1
-
-    # ---- v = ∂ψ/∂x ----
-    ddx!(V, Ω)
-    invlaplacian!(V, V)
-
-    # ---- on the grid ----
-    ifft!(u, U)
-    ifft!(v, V)
-
-    return u, v
-end
-
-# the advection of the fields from the transforms P of u v and Q of v² - u²,
-# -(∂²/∂x² - ∂²/∂y²)(u v) - ∂²/∂x∂y (v² - u²)
-function advection!(dΩdt::FTFields, P::FTFields, Q::FTFields)
-    # ---- ∂²/∂x² is -j², ∂²/∂y² is -k² and ∂²/∂x∂y is -j k on every mode ----
-    dΩdt .= (P.j.^2 .- P.k.^2) .* P .+ P.j .* P.k .* Q
-
-    return dΩdt
-end
-
 """
     ExplicitTerm(X, m, kf)
 
@@ -90,22 +63,34 @@ struct ExplicitTerm{FT<:FTFields, F<:Fields, IT, FFT}
 end
 
 function (eq::ExplicitTerm)(t::Real, Ω::FTFields{n}, dΩdt::FTFields{n}) where {n}
+    U, V = eq.U, eq.V
+    P, Q = eq.P, eq.Q
     u, v = eq.u, eq.v
     p, q = eq.p, eq.q
 
-    # ---- the velocity on the grid ----
-    velocity!(u, v, Ω, eq.U, eq.V, eq.ifft!)
+    # ---- in Fourier space: the velocity U = -∂ψ/∂y and V = ∂ψ/∂x, with the stream function
+    #      ψ = Δ⁻¹ω ----
+    ddy!(U, Ω)
+    invlaplacian!(U, U)
+    U .*= -1
+    ddx!(V, Ω)
+    invlaplacian!(V, V)
 
-    # ---- the two products, point by point ----
+    # ---- to the grid ----
+    eq.ifft!(u, U)
+    eq.ifft!(v, V)
+
+    # ---- on the grid: the two products, point by point ----
     p .= u .* v
     q .= v.^2 .- u.^2
 
-    # ---- and their transforms ----
-    eq.fft!(eq.P, p)
-    eq.fft!(eq.Q, q)
+    # ---- back to Fourier space ----
+    eq.fft!(P, p)
+    eq.fft!(Q, q)
 
-    # ---- the advection ----
-    advection!(dΩdt, eq.P, eq.Q)
+    # ---- in Fourier space: the advection, -(∂²/∂x² - ∂²/∂y²)(u v) - ∂²/∂x∂y (v² - u²), where
+    #      ∂²/∂x² is -j², ∂²/∂y² is -k² and ∂²/∂x∂y is -j k on every mode ----
+    dΩdt .= (P.j.^2 .- P.k.^2) .* P .+ P.j .* P.k .* Q
 
     # ---- the forcing -kf cos(kf y): -kf/2 at the two modes j = 0, k = ±kf ----
     view(parent(dΩdt), 1, _column(eq.kf, n), :)  .-= eq.kf/2

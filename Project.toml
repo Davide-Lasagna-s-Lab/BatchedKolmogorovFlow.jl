@@ -1,4 +1,4 @@
-name = "KolmogorovShootingGPU"
+name = "BatchedKolmogorovFlow"
 uuid = "539091b1-f0c1-4220-8929-0e2036281839"
 authors = ["Davide Lasagna <lasagnadavide@gmail.com>"]
 version = "0.1.0"

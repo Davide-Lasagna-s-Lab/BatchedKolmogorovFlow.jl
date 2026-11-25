@@ -1,14 +1,18 @@
-# KolmogorovShootingGPU.jl
+# BatchedKolmogorovFlow.jl
 
-Two-dimensional Kolmogorov flow for multiple shooting. The package gives the
-vorticity equation, its tangent equation and the transpose of the tangent on
-batches of fields, all the fields of a batch advanced together, on the CPU or
-on the GPU, with the methods that MultipleShooting.jl asks of a propagator.
+Two-dimensional Kolmogorov flow on batches of vorticity fields. The package
+gives the vorticity equation, its tangent equation and the transpose of the
+tangent, with all the fields of a batch advanced together, on a GPU, on one
+core of a CPU or on several. A batch may hold the states of many flows, or the
+segments of one orbit with their perturbations. The package gives the methods
+that MultipleShooting.jl asks of a propagator, so that it serves the searches
+of periodic orbits by multiple shooting.
 
 The equation, its terms and their names are those of OpenKolmogorovFlow.jl
-(OKF). The time stepping is that of Flows.jl, the IMEX Runge–Kutta scheme
-`CB3R2R3e` with constant steps. OKF, Flows, MultipleShooting and NKRoots are
-dependencies that are not registered: develop them in the environment.
+(OKF). The time stepping is that of Flows.jl, with constant steps: the IMEX
+Runge–Kutta scheme `CB3R2R3e` by default, or `CNRK2`, `CB3R2R2`, `CB3R2R3c` or
+`CB4R3R4` with the keyword `scheme`. OKF, Flows, MultipleShooting and NKRoots
+are dependencies that are not registered: develop them in the environment.
 
 ## The state
 
@@ -33,10 +37,27 @@ and `X.k`, computed once, as arrays that broadcast against it.
 On the grid a batch is a `Fields{m}`, a real array `(2m+2, 2m+2, B)` with `x`
 down the rows and `y` across the columns, the `Field{m}` of OKF transposed.
 
+## On a GPU and on a CPU
+
 The code is generic over the array of a batch. Every operation is a broadcast
-or a transform over its first two dimensions. With `array=CuArray` (CUDA
-loaded by the user, not a dependency of the package) the batches live on the
-GPU and cuFFT does the transforms.
+or a transform over its first two dimensions, and acts on all the fields of
+the batch. The keywords `array` and `tasks` of the propagator say where a
+batch runs.
+
+| keywords | where a batch runs |
+|---|---|
+| `array=CuArray` | On the GPU, which works on all the fields at once. cuFFT does the transforms. CUDA is loaded by the user and is not a dependency of the package. |
+| `array=Array` | On one core of the CPU. FFTW does the transforms. An operation on an array runs on one core, so that a batch, however large, uses one core. |
+| `array=Array, tasks=N` | On `N` cores of the CPU. The batch is cut into `N` chunks of fields, and `N` tasks advance one chunk each, at the same time, each as a batch of its own on its own thread. |
+
+A batch of 10 fields with `tasks=4` is cut into the fields `1:2`, `3:5`, `6:7`
+and `8:10`. The fields of a batch do not act on one another, since a field
+with its perturbations is one segment of an orbit. The chunks are then
+separate integrations, and the result is that of one task, to rounding. The
+tasks run at the same time and cannot share arrays or plans, so that each has
+its own storage. `propagate!`, `tangent!`, `tangents!` and `forced!` use the
+tasks. The other functions run on one. Start Julia with at least `N` threads,
+`julia -t N`.
 
 ## The files
 
@@ -50,7 +71,7 @@ GPU and cuFFT does the transforms.
 | `nonlinear.jl` | `ExplicitTerm`, advection and forcing |
 | `linearised.jl` | `TangentTerm`, the linearised advection, and `ForcedTangentTerm` |
 | `adjoint.jl` | `AdjointTerm`, the transpose of the linearised advection |
-| `propagator.jl` | `KolmogorovPropagator`, the methods of MultipleShooting and `adjoint!` |
+| `propagator.jl` | `KolmogorovPropagator`, the methods of MultipleShooting and `adjoint!`, then what serves them: the tasks, the storage |
 
 The advection is written in the form of Basdevant (1983),
 `(∂²/∂x² - ∂²/∂y²)(u v) + ∂²/∂x∂y (v² - u²)`, which needs the velocity alone on
@@ -60,19 +81,22 @@ so that the products have no aliasing on the modes kept.
 ## Interface
 
 ```julia
-using KolmogorovShootingGPU
+using BatchedKolmogorovFlow
 
-P = KolmogorovPropagator(n, m, Re, kf; dt=0.01, array=Array)
+P = KolmogorovPropagator(n, m, Re, kf; dt=0.01, scheme=:CB3R2R3e, array=Array, tasks=1)
 Q = KolmogorovPropagator(P, Re₂)
 ```
+
+`scheme` is the scheme of Flows.jl, `:CNRK2`, `:CB3R2R2`, `:CB3R2R3e`,
+`:CB3R2R3c` or `:CB4R3R4`. `array` and `tasks` are those of the section above.
 
 The storage of the batches of `B` fields, the terms with their plans and
 arrays and the registers of the scheme, lives in the propagator. It is built
 once, at the first call with `B` fields, and every later call with `B` fields
 only looks it up, so that a call allocates no batch, but for the stages that
-`stages` returns. It is kept by batch size
-because MultipleShooting calls the propagator with batches of different sizes,
-the seeds and the directions. What the tangent equation adds for `K`
+`stages` returns. It is kept by batch size because MultipleShooting calls the
+propagator with batches of different sizes, the seeds and the directions, and
+by task. What the tangent equation adds for `K`
 perturbations of `B` fields, and what `adjoint!` adds, its term and its
 registers, are built at their own first calls, so that a search that never
 calls them holds none of it. The second form is the propagator at another
@@ -113,8 +137,9 @@ and to rounding,
 
     realdots(tangent!(P, copy(X), V, τ), W) == realdots(V, adjoint!(P, stages(P, X, τ), W))
 
-It is the adjoint scheme of `CB3R2R3e` in Flows, with the explicit term
-`AdjointTerm`, stepped backwards over the stages of the steps of `propagate!`.
+It is the adjoint of the scheme in Flows, which has none for `CB4R3R4`, with
+the explicit term `AdjointTerm`, stepped backwards over the stages of the steps
+of `propagate!`.
 `AdjointTerm` is `TangentTerm` read backwards, each step replaced by its
 transpose, the forward transform by the inverse one and the inverse by the
 forward one. It equals the adjoint of the linearised advection,
@@ -132,8 +157,9 @@ adjoint!(P, S, W)         # a backward pass over them, for this W
 adjoint!(P, S, W₂)        # and for any other, with no new forward pass
 ```
 
-`S` holds the four stages of each of the `N` steps over `τ`, `4N` batches
-like `X`. For one field with `n = 33` and steps of 0.01 this is 14.6 GB over
+`S` holds the stages of each of the `N` steps over `τ`, four with the default
+scheme, `4N` batches like `X`. For one field with `n = 33` and steps of 0.01
+this is 14.6 GB over
 1000 time units, whatever the number of segments the orbit is cut into, and
 146 GB over 10⁴. `W` has as many fields as the batch that made `S`. For
 several adjoint fields about each field of `X`, call `adjoint!` once for each,

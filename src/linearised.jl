@@ -28,35 +28,37 @@ function _parts(Z::AbstractArray, k′::Int)
     return view(A, :, :, 1:1, :), view(A, :, :, 2:(1 + k′), :)
 end
 
-# The fields X and their perturbations V written into the bundle Z. V holds k′ blocks, one after
-# the other, each of as many perturbations as X has fields: block a is perturbation a of every
-# field, as MultipleShooting.jl packs the directions of a subspace step.
-function _bundle!(Z::FTFields, X::FTFields, V::FTFields)
+# The fields `fields` of X, all of them or those of the chunk of a task, and their perturbations in V
+# written into the bundle Z. V holds k′ blocks, one after the other, each of as many perturbations
+# as X has fields: block a is perturbation a of every field, as MultipleShooting.jl packs the
+# directions of a subspace step.
+function _bundle!(Z::FTFields, X::FTFields, V::FTFields, fields::UnitRange{Int}=1:size(X, 3))
     B      = size(X, 3)
     k′     = size(V, 3) ÷ B
     Ω, Λ   = _parts(Z, k′)
     blocks = reshape(parent(V), size(V, 1), size(V, 2), B, k′)
 
     # ---- every field, and block a of the perturbations in place a after the fields ----
-    view(Ω, :, :, 1, :) .= parent(X)
+    view(Ω, :, :, 1, :) .= view(parent(X), :, :, fields)
     for a in 1:k′
-        view(Λ, :, :, a, :) .= view(blocks, :, :, :, a)
+        view(Λ, :, :, a, :) .= view(blocks, :, :, fields, a)
     end
 
     return Z
 end
 
-# The fields of the bundle Z written into X, and their perturbations into the k′ blocks of V
-function _unbundle!(X::FTFields, V::FTFields, Z::FTFields)
+# The fields of the bundle Z written into the fields `fields` of X, and their perturbations into
+# the same places of the k′ blocks of V
+function _unbundle!(X::FTFields, V::FTFields, Z::FTFields, fields::UnitRange{Int}=1:size(X, 3))
     B      = size(X, 3)
     k′     = size(V, 3) ÷ B
     Ω, Λ   = _parts(Z, k′)
     blocks = reshape(parent(V), size(V, 1), size(V, 2), B, k′)
 
     # ---- every field, and place a after the fields into block a of the perturbations ----
-    parent(X) .= view(Ω, :, :, 1, :)
+    view(parent(X), :, :, fields) .= view(Ω, :, :, 1, :)
     for a in 1:k′
-        view(blocks, :, :, :, a) .= view(Λ, :, :, a, :)
+        view(blocks, :, :, fields, a) .= view(Λ, :, :, a, :)
     end
 
     return V
@@ -127,10 +129,22 @@ struct TangentTerm{FT<:FTFields, F<:Fields, IT, FFT}
 end
 
 function (eq::TangentTerm)(t::Real, Z::FTFields{n}, dZdt::FTFields{n}) where {n}
-    # ---- the velocity of the fields and of their perturbations, on the grid ----
-    velocity!(eq.u, eq.v, Z, eq.U, eq.V, eq.ifft!)
+    U, V = eq.U, eq.V
+    P, Q = eq.P, eq.Q
 
-    # ---- the fields, and their perturbations ----
+    # ---- in Fourier space: the velocity of the fields and of their perturbations, U = -∂ψ/∂y
+    #      and V = ∂ψ/∂x, with the stream function ψ = Δ⁻¹ω of each ----
+    ddy!(U, Z)
+    invlaplacian!(U, U)
+    U .*= -1
+    ddx!(V, Z)
+    invlaplacian!(V, V)
+
+    # ---- to the grid ----
+    eq.ifft!(eq.u, U)
+    eq.ifft!(eq.v, V)
+
+    # ---- on the grid: the fields, and their perturbations ----
     u, u′ = _parts(eq.u, eq.k′)
     v, v′ = _parts(eq.v, eq.k′)
     p, p′ = _parts(eq.p, eq.k′)
@@ -144,10 +158,13 @@ function (eq::TangentTerm)(t::Real, Z::FTFields{n}, dZdt::FTFields{n}) where {n}
     p′ .= u .* v′ .+ u′ .* v
     q′ .= 2 .* (v .* v′ .- u .* u′)
 
-    # ---- their transforms, and the advection ----
-    eq.fft!(eq.P, eq.p)
-    eq.fft!(eq.Q, eq.q)
-    advection!(dZdt, eq.P, eq.Q)
+    # ---- back to Fourier space ----
+    eq.fft!(P, eq.p)
+    eq.fft!(Q, eq.q)
+
+    # ---- in Fourier space: the advection of the fields and of their perturbations, from the
+    #      derivatives of the two products, as in the explicit term of the equation ----
+    dZdt .= (P.j.^2 .- P.k.^2) .* P .+ P.j .* P.k .* Q
 
     # ---- the forcing -kf cos(kf y) of the fields: -kf/2 at the two modes j = 0, k = ±kf ----
     F, _ = _parts(dZdt, eq.k′)

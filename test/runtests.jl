@@ -17,10 +17,10 @@ using Random
 using FFTW
 using Flows
 using MultipleShooting
-using KolmogorovShootingGPU
+using BatchedKolmogorovFlow
 import OpenKolmogorovFlow
 
-const KS  = KolmogorovShootingGPU
+const KS  = BatchedKolmogorovFlow
 const OKF = OpenKolmogorovFlow
 
 # ---- the device ----
