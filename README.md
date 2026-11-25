@@ -12,7 +12,9 @@ orbits by multiple shooting.
 The equation, its terms and their names are those of OpenKolmogorovFlow.jl
 (OKF). The time stepping is that of Flows.jl, with constant steps: the IMEX
 Runge–Kutta scheme `CB3R2R3e` by default, or `CNRK2`, `CB3R2R2`, `CB3R2R3c` or
-`CB4R3R4` with the keyword `scheme`. OKF, Flows and MultipleShooting are
+`CB4R3R4`, with the viscous term implicit, or the exponential `ETDRK2` or
+`ETDRK4`, with the viscous term exact, by the keyword `scheme`. OKF, Flows and
+MultipleShooting are
 dependencies that are not registered: develop them in the environment.
 
 ## The state
@@ -88,7 +90,7 @@ tasks. The other functions run on one. Start Julia with at least `N` threads,
 | `fields.jl` | `Fields`, a batch on the grid |
 | `operators.jl` | `ddx!`, `ddy!`, `laplacian!`, `invlaplacian!` on batches |
 | `fft.jl` | `InverseFFT!` and `ForwardFFT!`, between the two |
-| `implicit.jl` | `ImplicitTerm`, the viscous term |
+| `implicit.jl` | `ImplicitTerm`, the viscous term, implicit, or exact by the coefficients of the exponential schemes |
 | `nonlinear.jl` | `ExplicitTerm`, advection and forcing |
 | `linearised.jl` | `TangentTerm`, the linearised advection, `ForcedTangentTerm`, and `AdjointTerm`, its transpose |
 | `dynamics/nonlinearpropagator.jl` | `NonlinearPropagator`, the flow, and `stages` |
@@ -120,7 +122,8 @@ A  = AdjointPropagator(n, m, Re; B, scheme=:CB3R2R3e, device=:cpu)
 ```
 
 `scheme` is a key of `Flows.imex_schemes`: `:CNRK2`, `:CB3R2R2`, `:CB3R2R3e`,
-`:CB3R2R3c` or `:CB4R3R4`. `device` and `tasks` are those of the section
+`:CB3R2R3c` or `:CB4R3R4`, or the exponential `:ETDRK2` or `:ETDRK4`, which keep
+no stages and have no adjoint. `device` and `tasks` are those of the section
 above. `B` has no default, and `kf` is in `1:n`.
 
 Each object has one task, which it does when called, on batches of `B` fields,

@@ -5,7 +5,7 @@
 # implicit term is that of Re, and the explicit term too when it depends on Re, as the forced one
 _reynolds(ϕ::Flows.Flow, Re::Real) =
     Flows.flow(_reynolds(ϕ.sys.g, Re),
-               ImplicitTerm(Re),
+               ImplicitTerm(ϕ.sys.A, Re),
                ϕ.meth,
                ϕ.tstep)
 

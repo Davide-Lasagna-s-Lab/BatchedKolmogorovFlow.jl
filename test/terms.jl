@@ -23,8 +23,8 @@
     end
 
     # ---- implicit term and its solve ----
-    Y = mul!(similar(X), KS.ImplicitTerm(Re), X)
-    Z = Flows.ImcA!(KS.ImplicitTerm(Re), 0.3, X, similar(X))
+    Y = mul!(similar(X), KS.ImplicitTerm(X, Re), X)
+    Z = Flows.ImcA!(KS.ImplicitTerm(X, Re), 0.3, X, similar(X))
     for i in 1:3
         @test coefficients(mul!(OKF.FTField(n, m), im_, Ωs[i])) ≈ cpu(Y)[:, :, i] rtol=1e-15
         @test coefficients(Flows.ImcA!(im_, 0.3, Ωs[i], OKF.FTField(n, m))) ≈ cpu(Z)[:, :, i] rtol=1e-14

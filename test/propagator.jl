@@ -252,6 +252,32 @@ end
     @test_throws ArgumentError dynamics(3; scheme=:RK4)
 end
 
+@testset "the exponential schemes of Flows        " begin
+    X = batch(okf_fields(3))
+    V = random_fields(3; seed=5)
+    τ = 1.0
+    G(name, h) = NonlinearPropagator(n, m, Re, kf; B=3, dt=h, scheme=name, device=DEVICE)
+
+    # ---- of order two and four, the viscous term exact: the error against a flow of short steps
+    #      falls four and sixteen times when the step is halved ----
+    R = G(:CB4R3R4, 1e-4)(copy(X), τ)
+    for (name, ratio) in ((:ETDRK2, 4), (:ETDRK4, 16))
+        e = [reldiff(G(name, h)(copy(X), τ), R) for h in (0.02, 0.01)]
+        @test 0.9ratio < e[1]/e[2] < 1.1ratio
+    end
+
+    # ---- the tangent is the derivative of the discrete flow, a centred difference of the flow ----
+    for name in (:ETDRK2, :ETDRK4)
+        L = TangentPropagator(n, m, Re, kf; B=3, dt=dt, scheme=name, device=DEVICE)
+        h = 1e-5
+        D = (G(name, dt)(plus(X, h, V), τ) .- G(name, dt)(plus(X, -h, V), τ)) ./ (2h)
+        @test reldiff(D, L(copy(X), copy(V), τ)) < 1e-7
+    end
+
+    # ---- with no stages and no discrete adjoint in Flows.jl ----
+    @test_throws ArgumentError AdjointPropagator(n, m, Re; B=3, scheme=:ETDRK4, device=DEVICE)
+end
+
 @testset "the tangent, batches about the same fields" begin
     Ωs = okf_fields(3)
     P  = dynamics(3; k′=2)

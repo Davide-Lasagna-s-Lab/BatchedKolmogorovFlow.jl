@@ -24,8 +24,8 @@ which shares the fields, the term and the registers of its flow.
 
 # Arguments
 - `n`, `m`, `Re`, `B`, `device`: those of the [`NonlinearPropagator`](@ref).
-- `scheme::Symbol=:CB3R2R3e`: the scheme of the flow that made the stages, one of
-  `Flows.imex_schemes` with a discrete adjoint.
+- `scheme::Symbol=:CB3R2R3e`: the scheme of the flow that made the stages, one of the
+  implicit–explicit schemes of `Flows.imex_schemes`, which have a discrete adjoint.
 """
 struct AdjointPropagator{WT<:FTFields, ΨT<:Flows.Flow}
     Re::Float64     # the Reynolds number
@@ -47,7 +47,7 @@ struct AdjointPropagator{WT<:FTFields, ΨT<:Flows.Flow}
         #      the scheme in the mode of the discrete adjoint ----
         W = FTFields(n, B; device=device)
         ψ = Flows.flow(AdjointTerm(W, m),
-                       ImplicitTerm(Re),
+                       ImplicitTerm(W, Re),
                        Flows.imex_schemes[scheme](W, Flows.DiscreteMode(true)),
                        Flows.TimeStepFromCache())
 

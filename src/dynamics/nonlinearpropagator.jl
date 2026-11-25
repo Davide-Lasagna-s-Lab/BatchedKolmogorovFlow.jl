@@ -1,6 +1,6 @@
 # The flow of Kolmogorov flow on batches of fields, the flow G of MultipleShooting.jl: all the
-# fields of a batch advanced together by an implicit–explicit scheme of Flows.jl with constant
-# steps, CB3R2R3e unless another is asked for, the viscous term implicit.
+# fields of a batch advanced together by a scheme of Flows.jl with constant steps, CB3R2R3e unless
+# another is asked for, the viscous term implicit, or exact with an exponential scheme.
 #
 # The objects of the dynamics of a search, this flow, the tangent (tangentpropagator.jl), the
 # right-hand side (righthandside.jl) and the shift (xshift.jl), are callables, each with its task
@@ -35,11 +35,11 @@ propagators that share their workspaces must not run at the same time.
 - `B::Int`: the fields of a batch, required.
 - `dt::Real=0.01`: the time step. A time that is not a whole number of steps ends with a shorter
   one.
-- `scheme::Symbol=:CB3R2R3e`: the implicit–explicit scheme of Flows.jl, one of
-  `Flows.imex_schemes`, `:CNRK2`, `:CB3R2R2`, `:CB3R2R3e`, `:CB3R2R3c` or `:CB4R3R4`, of two,
-  three, four, four and six stages per step and of order two, two, three, three and four. The
-  exponential schemes of `Flows.imex_schemes` need the coefficients of their linear part, which
-  the viscous term does not give yet.
+- `scheme::Symbol=:CB3R2R3e`: the scheme of Flows.jl, one of `Flows.imex_schemes`: the
+  implicit–explicit ones, `:CNRK2`, `:CB3R2R2`, `:CB3R2R3e`, `:CB3R2R3c` or `:CB4R3R4`, of two,
+  three, four, four and six stages per step and of order two, two, three, three and four, with
+  the viscous term implicit; or the exponential ones, `:ETDRK2` or `:ETDRK4`, of order two and
+  four, with the viscous term exact. The exponential ones keep no stages and have no adjoint.
 - `device::Symbol=:cpu`: where the batches live, `:cpu`, on `Array`s, or `:gpu`, on `CuArray`s,
   once CUDA is loaded, `using CUDA`, which is not a dependency of the package.
 - `tasks::Int=1`: how many tasks advance a batch on the CPU. An operation on an array runs on
@@ -76,7 +76,7 @@ struct NonlinearPropagator{K}
         function chunk(fields)
             X = FTFields(n, length(fields); device=device)
             ϕ = Flows.flow(ExplicitTerm(X, m, kf),
-                           ImplicitTerm(Re),
+                           ImplicitTerm(X, Re),
                            Flows.imex_schemes[scheme](X),
                            Flows.TimeStepConstant(dt))
             return (fields = fields,
@@ -142,7 +142,8 @@ The stages of every step of the flow `G` over `τ` from the fields `X`, kept for
 interval and is left as it is. The steps are those of `G(X, τ)`. The stages are made once and
 serve any number of calls of the adjoint.
 
-`S` holds the stages of each of the `N` steps over `τ`, four with the default scheme, `4N`
+An implicit–explicit scheme only: the exponential ones keep no stages. `S` holds the stages of
+each of the `N` steps over `τ`, four with the default scheme, `4N`
 batches like `X`, in the stage cache of Flows.jl. For one field with `n = 33` and steps of 0.01
 this is 14.6 GB over 1000 time units, whatever the number of segments the orbit is cut into.
 """

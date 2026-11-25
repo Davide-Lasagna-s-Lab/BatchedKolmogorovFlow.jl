@@ -74,7 +74,7 @@ struct TangentPropagator{K}
             Z    = FTFields(n, (1 + k′)*length(fields); device=device)
             term = TangentTerm(Z, k′, m, kf)
             ϕ    = Flows.flow(forced ? ForcedTangentTerm(term, Re) : term,
-                              ImplicitTerm(Re),
+                              ImplicitTerm(Z, Re),
                               Flows.imex_schemes[scheme](Z),
                               Flows.TimeStepConstant(dt))
             return (fields = fields,
