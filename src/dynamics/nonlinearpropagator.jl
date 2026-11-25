@@ -102,14 +102,14 @@ struct NonlinearPropagator{K, E}
         whole = length(chunks) == 1 ? (X = chunks[1].X, ϕ = chunks[1].ϕ) : equation(B)
 
         return new{eltype(chunks), typeof(whole)}(n,
-                                                m,
-                                                Float64(Re),
-                                                kf,
-                                                Float64(dt),
-                                                scheme,
-                                                B,
-                                                chunks,
-                                                whole)
+                                                  m,
+                                                  Float64(Re),
+                                                  kf,
+                                                  Float64(dt),
+                                                  scheme,
+                                                  B,
+                                                  chunks,
+                                                  whole)
     end
 
     # the propagator G at another Reynolds number, with its fields, terms and registers, shared,

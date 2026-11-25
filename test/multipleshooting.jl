@@ -44,7 +44,7 @@ end
     J  = Jacobian(D.L, D.F, z; S=S, dS=S)
 
     # ---- the inner product of the unknowns is that of the fields ----
-    @test dot(z, v) ≈ realdot(z.X, v.X) + dot(z.d, v.d)
+    @test dot(z, v) ≈ dot(z.X, v.X) + dot(z.d, v.d)
 
     # ---- the product with the Jacobian against the centred difference of the residual: the seeds
     #      and the shift to rounding of the difference, the period up to the error of the scheme ----
@@ -59,8 +59,8 @@ end
     f₁ = view(D.F(similar(z.X), z.X), :, :, 1:1)
     u₁ = view(z.X, :, :, 1:1)
     v₁ = view(v.X, :, :, 1:1)
-    @test MultipleShooting.period(Jv) ≈ realdot(f₁, v₁)
-    @test MultipleShooting.shift(Jv, 1) ≈ realdot(S(similar(u₁), u₁, 1), v₁)
+    @test MultipleShooting.period(Jv) ≈ dot(f₁, v₁)
+    @test MultipleShooting.shift(Jv, 1) ≈ dot(S(similar(u₁), u₁, 1), v₁)
 
     # ---- the column of the Reynolds number, from the forced tangent, against the centred
     #      difference of the residual at the flows of the family ----

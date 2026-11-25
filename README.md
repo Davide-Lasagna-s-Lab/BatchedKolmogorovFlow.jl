@@ -117,7 +117,7 @@ workspaces and costs nothing, and must not run at the same time as it.
 | `stages(G, X, τ)` | the stages of every step of the flow over `τ` from the fields `X`, which are left as they are, kept for the adjoint |
 | `A(W, S)` | the transpose of the tangent applied to `W`, back over the stages `S` |
 | `dots(X, Y)` | the inner products of the fields one by one, the mean of `ω₁ ω₂`, a real array `(1, 1, B)`: the method of `dots` of MultipleShooting |
-| `realdot(X, Y)` | their sum over the fields |
+| `dot(X, Y)` | their sum over the fields, a method of `LinearAlgebra.dot` |
 
 Every call takes views of a batch, `view(X, :, :, b)`. The flow, the tangent,
 the right-hand side, `stages` and the adjoint first give their input the

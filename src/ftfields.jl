@@ -136,10 +136,14 @@ function Base.similar(X::FTFields{n}, ::Type{T}, dims::Dims) where {n, T}
     return similar(X.data, T, dims)
 end
 
-# the fields b of a batch, as a batch that shares its coefficients. `selectdim`, by which
-# MultipleShooting takes the first and the last seed, passes slices for the colons
+# the fields b of a batch, as a batch that shares its coefficients and its wavenumbers and
+# weights, so that a view is a batch of fields; `selectdim` passes slices for the colons
 Base.view(X::FTFields, ::Union{Colon, Base.Slice}, ::Union{Colon, Base.Slice}, b::AbstractUnitRange) =
     FTFields(view(X.data, :, :, b), X)
+
+# the fields r of a batch, as MultipleShooting takes the states of the seeds, the first and the
+# last among them: a view, a batch of fields, so that their inner product is that of the fields
+MultipleShooting.states(X::FTFields, r::AbstractUnitRange) = view(X, :, :, r)
 
 # the operations that MultipleShooting makes on a batch besides broadcasting, each on the array
 # of the coefficients
@@ -229,9 +233,10 @@ function dots(X::FTFields{n}, Y::FTFields{n}) where {n}
 end
 
 """
-    realdot(X, Y) -> Float64
+    dot(X, Y) -> Float64
 
-The sum over the fields of the inner products [`dots`](@ref) of the batches `X` and `Y`.
-`realdot(X, X)` is the mean of ω² summed over the fields.
+The inner product of the batches `X` and `Y`, the sum over the fields of their inner products
+[`dots`](@ref): `dot(X, X)` is the mean of ω² summed over the fields. A method of
+`LinearAlgebra.dot`, weighted as the inner product of the fields, and real.
 """
-realdot(X::FTFields{n}, Y::FTFields{n}) where {n} = sum(dots(X, Y))
+LinearAlgebra.dot(X::FTFields{n}, Y::FTFields{n}) where {n} = sum(dots(X, Y))

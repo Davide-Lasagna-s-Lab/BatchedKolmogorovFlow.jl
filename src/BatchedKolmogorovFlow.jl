@@ -5,8 +5,8 @@ Two-dimensional Kolmogorov flow on batches of vorticity fields: the vorticity eq
 tangent equation and the transpose of the tangent, with all the fields of a batch advanced
 together, on a GPU (`CuArray`, cuFFT), on one core of a CPU (`Array`, FFTW) or on several, a
 chunk of the batch on each. A batch may hold the states of many flows, or the segments of one
-orbit with their perturbations, and the package gives the methods that MultipleShooting.jl asks
-of a propagator.
+orbit with their perturbations, and the package gives the objects of the dynamics that
+MultipleShooting.jl calls: the flow, the tangent, the right-hand side and the shift.
 
 The equation, its terms and their names are those of OpenKolmogorovFlow.jl, and the time stepping
 is that of Flows.jl. A batch of `B` fields is an [`FTFields`](@ref), the Fourier coefficients of
@@ -22,6 +22,7 @@ import AbstractFFTs
 import FFTW
 import Flows
 import OpenKolmogorovFlow
+import MultipleShooting
 import MultipleShooting: dots
 
 export NonlinearPropagator,
@@ -32,8 +33,7 @@ export NonlinearPropagator,
        FTFields,
        Fields,
        stages,
-       dots,
-       realdot
+       dots
 
 include("ftfields.jl")
 include("fields.jl")

@@ -73,10 +73,17 @@ end
     c  = dots(X, Y)
     @test size(c) == (1, 1, 3)
     @test products(X, Y) ≈ [dot(Ωs[i], Ψs[i]) for i in 1:3] rtol=1e-14
-    @test realdot(X, Y) ≈ sum(cpu(c))
-    @test realdot(X, X) ≈ sum(norm(Ω)^2 for Ω in Ωs) rtol=1e-14
-    @test realdot(X, X) ≈ Re * sum(OKF.dissrate(Ω, Re) for Ω in Ωs) rtol=1e-14
+    @test dot(X, Y) ≈ sum(cpu(c))
+    @test dot(X, X) ≈ sum(norm(Ω)^2 for Ω in Ωs) rtol=1e-14
+    @test dot(X, X) ≈ Re * sum(OKF.dissrate(Ω, Re) for Ω in Ωs) rtol=1e-14
     @test products(view(X, :, :, 2:2), view(Y, :, :, 2:2))[1] ≈ cpu(c)[2]
+
+    # ---- the states of MultipleShooting, the first and the last, are batches of fields, with the
+    #      inner product of the fields ----
+    @test MultipleShooting.states(X, 2:3) isa FTFields
+    @test head(X) isa FTFields && tail(X) isa FTFields
+    @test dot(head(X), head(Y)) ≈ cpu(c)[1]
+    @test dot(tail(X), tail(Y)) ≈ cpu(c)[3]
 
     # ---- one reduction, with no array of the size of the batch in between: on many fields it
     #      allocates a small share of one batch of Float64 ----
