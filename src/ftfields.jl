@@ -18,6 +18,7 @@
 
 """
     FTFields(data)
+    FTFields(data, j, k, w)
     FTFields(Ωs)
     FTFields(n, B; device=:cpu)
 
@@ -35,6 +36,8 @@ inner product of the fields, [`dots`](@ref), a column like `X.j`. The batches ma
 
 # Arguments
 - `data`: the coefficients, a complex array `(n+1, 2n+1, B)`, kept, not copied.
+- `j`, `k`, `w`: the wavenumbers and the weights, kept as they are, as the batches made from a
+  batch share those of that batch.
 - `Ωs`: or a vector of `B` fields of OpenKolmogorovFlow, `FTField{n, m}`, copied to a batch on
   the CPU. `FTField(X, b, m)` gives field `b` of a batch back.
 - `n::Int`, `B::Int`: or the largest wavenumber and the number of fields of a batch of zeros,
@@ -46,38 +49,45 @@ struct FTFields{n, A<:AbstractArray{ComplexF64, 3}, W<:AbstractMatrix{Float64}} 
        k::W # the wavenumbers along y of the columns, a row (1, 2n+1): 0, …, n, -n, …, -1
        w::W # the weights of the rows in the inner product, a column (n+1, 1): 1, 2, …, 2
 
-    function FTFields(data::AbstractArray{ComplexF64, 3})
+    # the coefficients, with the wavenumbers and the weights of their rows and columns, kept, not
+    # copied: the batches made from a batch, its views, copies and batches like it, share those
+    # of the batch they come from, made once
+    function FTFields(data::AbstractArray{ComplexF64, 3},
+                         j::W,
+                         k::W,
+                         w::W) where {W<:AbstractMatrix{Float64}}
         # ---- input checks ----
         size(data, 2) == 2*size(data, 1) - 1 ||
             throw(ArgumentError("the coefficients must have size (n+1, 2n+1, B)"))
 
-        # ---- the largest wavenumber, from the number of rows ----
-        n = size(data, 1) - 1
-
-        # ---- the wavenumbers, computed once, on the device of the coefficients, copied there
-        #      from vectors of Float64 on the CPU, which every array type takes ----
-        j = copyto!(similar(data, Float64, (n + 1, 1)), Float64[0:n;])
-        k = copyto!(similar(data, Float64, (1, 2n + 1)), Float64[0:n; -n:-1])
-
-        # ---- the weights of the rows in the inner product, likewise: the modes with j ≥ 1 stand
-        #      for their conjugates too, and count twice; the row j = 0 holds both k and -k, and
-        #      counts once ----
-        w = copyto!(similar(data, Float64, (n + 1, 1)), Float64[1; fill(2, n)])
-
-        return new{n, typeof(data), typeof(j)}(data,
-                                               j,
-                                               k,
-                                               w)
+        return new{size(data, 1) - 1, typeof(data), W}(data,
+                                                        j,
+                                                        k,
+                                                        w)
     end
-
-    # a batch on other coefficients, with the wavenumbers and the weights of the batch X, shared
-    # and not copied
-    FTFields(data::AbstractArray{ComplexF64, 3}, X::FTFields{n}) where {n} =
-        new{n, typeof(data), typeof(X.j)}(data,
-                                          X.j,
-                                          X.k,
-                                          X.w)
 end
+
+# a batch on the coefficients data, with their wavenumbers and weights, made on their device
+function FTFields(data::AbstractArray{ComplexF64, 3})
+    # ---- the largest wavenumber, from the number of rows ----
+    n = size(data, 1) - 1
+
+    return FTFields(data,
+                    _wavenumbers_x(data, n),
+                    _wavenumbers_y(data, n),
+                    _weights(data, n))
+end
+
+# the wavenumbers along x of the rows of a batch of largest wavenumber n, a column 0, …, n, and
+# along y of its columns, a row 0, …, n, -n, …, -1, on the device of the coefficients data:
+# copied there from vectors of Float64 on the CPU, which every array type takes
+_wavenumbers_x(data, n::Int) = copyto!(similar(data, Float64, (n + 1, 1)), Float64[0:n;])
+_wavenumbers_y(data, n::Int) = copyto!(similar(data, Float64, (1, 2n + 1)), Float64[0:n; -n:-1])
+
+# the weights of the rows in the inner product, a column on the device of data likewise: the
+# modes with j ≥ 1 stand for their conjugates too, and count twice; the row j = 0 holds both k
+# and -k, and counts once
+_weights(data, n::Int) = copyto!(similar(data, Float64, (n + 1, 1)), Float64[1; fill(2, n)])
 
 
 # ---------------------------------------------------------------------------- #
@@ -146,8 +156,8 @@ Base.@propagate_inbounds Base.getindex(X::FTFields, I::Vararg{Int, 3}) = X.data[
 Base.@propagate_inbounds Base.setindex!(X::FTFields, a, I::Vararg{Int, 3}) = (X.data[I...] = a)
 
 # a batch like X and a copy of it, with its wavenumbers
-Base.similar(X::FTFields) = FTFields(similar(X.data), X)
-Base.copy(X::FTFields)    = FTFields(copy(X.data), X)
+Base.similar(X::FTFields) = FTFields(similar(X.data), X.j, X.k, X.w)
+Base.copy(X::FTFields)    = FTFields(copy(X.data), X.j, X.k, X.w)
 
 # an array of another type or size on the device of X, as the fields on the grid; or, when the
 # type and the first two sizes are those of a batch, a batch of fields like those of X with the
@@ -155,7 +165,7 @@ Base.copy(X::FTFields)    = FTFields(copy(X.data), X)
 # together
 function Base.similar(X::FTFields{n}, ::Type{T}, dims::Dims) where {n, T}
     batch = T === ComplexF64 && length(dims) == 3 && dims[1:2] == (n + 1, 2n + 1)
-    batch && return FTFields(similar(X.data, T, dims), X)
+    batch && return FTFields(similar(X.data, T, dims), X.j, X.k, X.w)
 
     return similar(X.data, T, dims)
 end
@@ -163,7 +173,7 @@ end
 # the fields b of a batch, as a batch that shares its coefficients and its wavenumbers and
 # weights, so that a view is a batch of fields; `selectdim` passes slices for the colons
 Base.view(X::FTFields, ::Union{Colon, Base.Slice}, ::Union{Colon, Base.Slice}, b::AbstractUnitRange) =
-    FTFields(view(X.data, :, :, b), X)
+    FTFields(view(X.data, :, :, b), X.j, X.k, X.w)
 
 # the fields r of a batch, as MultipleShooting takes the states of the seeds, the first and the
 # last among them: a view, a batch of fields, so that their inner product is that of the fields
