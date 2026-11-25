@@ -1,6 +1,6 @@
-# The cost of one propagate! of B fields of Kolmogorov flow over τ = 10, n = 33 on
+# The cost of one integration of B fields of Kolmogorov flow over τ = 10, n = 33 on
 # a grid of 100² (m = 49), Re = 40, kf = 4, CB3R2R3e with dt = 0.01, and of one
-# tangent! of B bases and B perturbations, against the integration of one field
+# tangent of B bases and B perturbations, against the integration of one field
 # with OpenKolmogorovFlow and Flows.jl on the CPU.
 #
 #     julia --project=<this folder> timing.jl cpu [τ] [B₁ B₂ …]
@@ -51,17 +51,18 @@ t_okf = @elapsed G(copy(Ω), (0, TAU))
 # ---- batches, a propagator of each size, the workspaces of the size before freed first ----
 for B in BS
     GC.gc()
-    P = KolmogorovPropagator(n, m, Re, kf; B=B, k′=1, dt=0.01, device=Symbol(DEVICE))
+    G = NonlinearPropagator(n, m, Re, kf; B=B, dt=0.01, device=Symbol(DEVICE))
+    L = TangentPropagator(n, m, Re, kf; B=B, dt=0.01, device=Symbol(DEVICE))
     X = FTFields(ARRAY(repeat(parent(FTFields([Ω])), 1, 1, B)))
     V = FTFields(ARRAY(repeat(parent(FTFields([Ω])), 1, 1, B)))
 
-    # ---- propagate! ----
-    propagate!(P, copy(X), 0.1); wait!()
-    t = @elapsed (propagate!(P, X, TAU); wait!())
-    @printf "%s propagate! of %5d fields over τ = %g: %9.3f s, %.4f s per field, %6.3f × OKF\n" DEVICE B TAU t t/B t/(B*t_okf)
+    # ---- the flow ----
+    G(copy(X), 0.1); wait!()
+    t = @elapsed (G(X, TAU); wait!())
+    @printf "%s flow    of %5d fields over τ = %g: %9.3f s, %.4f s per field, %6.3f × OKF\n" DEVICE B TAU t t/B t/(B*t_okf)
 
-    # ---- tangent! ----
-    tangent!(P, copy(X), copy(V), 0.1); wait!()
-    t = @elapsed (tangent!(P, X, V, TAU); wait!())
-    @printf "%s tangent!   of %5d pairs  over τ = %g: %9.3f s, %.4f s per pair,  %6.3f × OKF\n" DEVICE B TAU t t/B t/(B*t_okf)
+    # ---- the tangent ----
+    L(copy(X), copy(V), 0.1); wait!()
+    t = @elapsed (L(X, V, TAU); wait!())
+    @printf "%s tangent of %5d pairs  over τ = %g: %9.3f s, %.4f s per pair,  %6.3f × OKF\n" DEVICE B TAU t t/B t/(B*t_okf)
 end

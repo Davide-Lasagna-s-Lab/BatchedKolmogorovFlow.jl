@@ -96,7 +96,7 @@ end
 plus(X, a, Y) = FTFields(X .+ a .* Y)
 
 # the k′ blocks of as many fields as X of the batch V, one after the other, as a vector of
-# batches that share them: the directions that tangent! takes
+# batches that share them: the directions that the tangent takes
 directions(X, V) = [view(V, :, :, (k₁ - 1)*size(X, 3) .+ (1:size(X, 3))) for k₁ in 1:(size(V, 3) ÷ size(X, 3))]
 
 # the bundle of the fields X with their perturbations V, k′ blocks of as many, and the fields and
@@ -110,6 +110,26 @@ function unbundle(Z, B)
 
     return X, V
 end
+
+# the objects of the dynamics of the tests, of B fields on the device, in a named tuple: the flow
+# G, the tangent L of k′ perturbations of every field, the forced tangent Lp, the right-hand side F
+# and the adjoint A, at the Reynolds number reynolds, with the keywords kw of the propagators
+function dynamics(B; k′=1, reynolds=Re, kw...)
+    scheme = get(kw, :scheme, :CB3R2R3e)
+
+    return (G  = NonlinearPropagator(n, m, reynolds, kf; B=B, dt=dt, device=DEVICE, kw...),
+            L  = TangentPropagator(n, m, reynolds, kf; B=B, k′=k′, dt=dt, device=DEVICE, kw...),
+            Lp = TangentPropagator(n, m, reynolds, kf; B=B, forced=true, dt=dt, device=DEVICE, kw...),
+            F  = RightHandSide(n, m, reynolds, kf; B=B, device=DEVICE),
+            A  = AdjointPropagator(n, m, reynolds; B=B, scheme=scheme, device=DEVICE))
+end
+
+# the objects of the dynamics D at another Reynolds number, sharing their workspaces
+at(D, R) = (G  = NonlinearPropagator(D.G, R),
+            L  = TangentPropagator(D.L, R),
+            Lp = TangentPropagator(D.Lp, R),
+            F  = RightHandSide(D.F, R),
+            A  = AdjointPropagator(D.A, R))
 
 # the largest difference relative to the largest coefficient, on the CPU
 reldiff(A, B) = maximum(abs, cpu(A) .- cpu(B)) / maximum(abs, cpu(B))

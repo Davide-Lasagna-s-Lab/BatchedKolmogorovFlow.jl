@@ -21,7 +21,7 @@
 # whole batch at once. The fields are advanced once whatever k′ is, and only the products differ
 # between the fields and their perturbations.
 #
-# Where it comes from. tangent! takes the B fields in a batch X, and their perturbations in V,
+# Where it comes from. The tangent takes the B fields in a batch X, and their perturbations in V,
 # a batch like X for one perturbation of every field, or a vector of k′ of them, the directions
 # of a subspace step, V[k₁] holding perturbation k₁ of every field. With B = 3 fields and k′ = 2,
 # the slices along the last dimension are

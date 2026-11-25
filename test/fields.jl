@@ -59,7 +59,7 @@ end
     @test all(cpu(Y)[1, 1, :] .== 0)
 
     # ---- a projection, orthogonal in the inner product: the identity twice, and its own transpose
-    #      on batches that are not fields, which makes adjoint! the transpose of tangent! ----
+    #      on batches that are not fields, which makes the adjoint the transpose of the tangent ----
     J₁ = plus(random_fields(3; seed=1), 1, junk(3; seed=1))
     J₂ = plus(random_fields(3; seed=2), 1, junk(3; seed=2))
     S₁ = KS.apply_symmetry!(copy(J₁))

@@ -75,13 +75,13 @@
     @test reldiff(plus(dF, -1, dV), ΔX ./ -Re^2) < 1e-14
 
     # ---- the right hand side, of a batch and of a view of one field ----
-    P  = KolmogorovPropagatorDict(n, m, Re, kf; sizes=[(3, 0), (1, 0)], device=DEVICE)
+    P  = dynamics(3)
     eq = OKF.ForwardEquation(n, m, Re, kf, FFTW.ESTIMATE)
-    R  = rhs!(P, similar(X), X)
+    R  = P.F(similar(X), X)
     for i in 1:3
         @test reldiff(cpu(R)[:, :, i], coefficients(eq(0.0, copy(Ωs[i]), OKF.FTField(n, m)))) < 1e-13
     end
-    @test reldiff(rhs!(P, similar(view(X, :, :, 2:2)), view(X, :, :, 2:2)), cpu(R)[:, :, 2:2]) < 1e-13
+    @test reldiff(dynamics(1).F(similar(view(X, :, :, 2:2)), view(X, :, :, 2:2)), cpu(R)[:, :, 2:2]) < 1e-13
 end
 
 @testset "term of the adjoint                    " begin

@@ -4,9 +4,10 @@ Two-dimensional Kolmogorov flow on batches of vorticity fields. The package
 gives the vorticity equation, its tangent equation and the transpose of the
 tangent, with all the fields of a batch advanced together, on a GPU, on one
 core of a CPU or on several. A batch may hold the states of many flows, or the
-segments of one orbit with their perturbations. The package gives the methods
-that MultipleShooting.jl asks of a propagator, so that it serves the searches
-of periodic orbits by multiple shooting.
+segments of one orbit with their perturbations. The package gives the objects
+of the dynamics that MultipleShooting.jl calls, the flow, the tangent, the
+right-hand side and the shift, so that it serves the searches of periodic
+orbits by multiple shooting.
 
 The equation, its terms and their names are those of OpenKolmogorovFlow.jl
 (OKF). The time stepping is that of Flows.jl, with constant steps: the IMEX
@@ -55,7 +56,7 @@ and `8:10`. The fields of a batch do not act on one another, since a field
 with its perturbations is one segment of an orbit. The chunks are then
 separate integrations, and the result is that of one task, to rounding. The
 tasks run at the same time and cannot share arrays or plans, so that each has
-its own workspace. `propagate!`, `tangent!` and `forced!` use the
+its own workspace. The flow and the tangent, forced or not, use the
 tasks. The other functions run on one. Start Julia with at least `N` threads,
 `julia -t N`.
 
@@ -70,8 +71,12 @@ tasks. The other functions run on one. Start Julia with at least `N` threads,
 | `implicit.jl` | `ImplicitTerm`, the viscous term |
 | `nonlinear.jl` | `ExplicitTerm`, advection and forcing |
 | `linearised.jl` | `TangentTerm`, the linearised advection, `ForcedTangentTerm`, and `AdjointTerm`, its transpose |
-| `propagator.jl` | `KolmogorovPropagator`, of one size, the methods of MultipleShooting and `adjoint!`, then what serves them: the tasks, the advance of the fields with their perturbations |
-| `propagatordict.jl` | `KolmogorovPropagatorDict`, the propagators of several sizes in a dictionary, itself a propagator |
+| `dynamics/nonlinearpropagator.jl` | `NonlinearPropagator`, the flow, and `stages` |
+| `dynamics/tangentpropagator.jl` | `TangentPropagator`, the flow with its tangent, forced or not |
+| `dynamics/righthandside.jl` | `RightHandSide`, the time derivative of the fields |
+| `dynamics/xshift.jl` | `XShift`, the shift along `x` and its generator |
+| `dynamics/adjointpropagator.jl` | `AdjointPropagator`, the transpose of the tangent, back over the stages |
+| `dynamics/devices.jl`, `chunks.jl`, `flows.jl` | what they share: the batches on a device, the chunks of the tasks on the CPU, the flows of Flows.jl at another Reynolds number |
 
 The advection is written in the form of Basdevant (1983),
 `(∂²/∂x² - ∂²/∂y²)(u v) + ∂²/∂x∂y (v² - u²)`, which needs the velocity alone on
@@ -83,75 +88,57 @@ so that the products have no aliasing on the modes kept.
 ```julia
 using BatchedKolmogorovFlow
 
-P = KolmogorovPropagator(n, m, Re, kf; B, k′=0, dt=0.01, scheme=:CB3R2R3e, device=:cpu,
-                         tasks=1, adjoint=false)
-Q = KolmogorovPropagator(P, Re₂)
-
-D = KolmogorovPropagatorDict(n, m, Re, kf; sizes=[(B, 1), (B, k′)], dt=0.01, ...)
-E = KolmogorovPropagatorDict(D, Re₂)
+G  = NonlinearPropagator(n, m, Re, kf; B, dt=0.01, scheme=:CB3R2R3e, device=:cpu, tasks=1)
+L  = TangentPropagator(n, m, Re, kf; B, k′=1, forced=false, dt=0.01, scheme=:CB3R2R3e,
+                       device=:cpu, tasks=1)
+F  = RightHandSide(n, m, Re, kf; B, device=:cpu)
+S  = XShift()
+A  = AdjointPropagator(n, m, Re; B, scheme=:CB3R2R3e, device=:cpu)
 ```
 
 `scheme` is the scheme of Flows.jl, one of `Flows.imex_schemes`, `:CNRK2`,
 `:CB3R2R2`, `:CB3R2R3e`, `:CB3R2R3c` or `:CB4R3R4`. `device` and `tasks` are
 those of the section above.
 
-A propagator is of one size, batches of `B` fields with `k′` perturbations
-each, `k′ = 0` for none. Its workspace, the batches that its flows advance,
-the terms with their plans and arrays and the registers of the scheme, is made
-with it, so that a call allocates no batch, but for the stages that `stages`
-returns. `tangent!` takes a vector of `k′` batches of perturbations, or one
-batch when `k′ = 1`, as `forced!`. `adjoint!` needs `adjoint=true`. A call of
-another size is an error. `KolmogorovPropagator(P, Re₂)` is the propagator at
-another Reynolds number. It shares the workspace of `P` and costs nothing. The
-two must not run at the same time.
+Each object has one task, which it does when called, on batches of `B` fields,
+and holds the workspaces of that task, made with it, so that a call allocates
+no batch, but for the stages that `stages` returns. A call with another number
+of fields is an error. Each takes a second form, `G = NonlinearPropagator(G,
+Re₂)` and so on, the object at another Reynolds number, which shares its
+workspaces and costs nothing, and must not run at the same time as it.
 
-A search calls a few sizes, all known before it starts: the seeds alone, the
-seeds with one perturbation each, for a product of the Jacobian, and the seeds
-with the `k′` directions of a subspace step. `KolmogorovPropagatorDict` makes a propagator
-for each size, with the same keywords, in a dictionary by size, `D[B, k′]`.
-The dictionary is itself a propagator, which hands every call to the one of
-its size: one batch of perturbations to `(B, 1)`, `k′` of them to `(B, k′)`,
-and the equation alone to any of `B` fields, as every one has the workspaces
-of the equation. A search with `m` seeds and a subspace of `k′` directions takes
-`sizes = [(m, 1), (m, k′)]`, the sweeps of `N` segments with `k` vectors
-`[(1, k), (N, k)]`.
-
-| function | what it does |
+| call | what it does |
 |---|---|
-| `propagate!(P, X, τ)` | advances every field of `X` in place by `τ`, in steps of `dt` and a last shorter step that ends on `τ` |
-| `tangent!(P, X, V, τ)` | advances the fields `X` and the perturbations `V` together, `V` by the tangent equation, with the same scheme and steps: the derivative of the discrete flow. `V` is a batch like `X`, or a vector of `k′` such batches, each about the fields of `X`, which are advanced once for all of them |
-| `forced!(P, X, V, τ)` | as `tangent!`, with the tangent equation forced by the derivative of the right-hand side in the Reynolds number, `-Δω/Re²` |
-| `rhs!(P, F, X)` | the time derivative of every field |
-| `shift!(P, X, s)` | `ω(x, y) → ω(x + s, y)` for every field, the coefficients times `cis(j s)` |
-| `dshift!(P, G, X, i)` | the generator of the shift, `∂ω/∂x` |
-| `stages(P, X, τ)` | the stages of every step of the flow over `τ` from the fields `X`, which are left as they are, kept for `adjoint!` |
-| `adjoint!(P, S, W)` | the transpose of `tangent!` applied to `W`, back over the stages `S` |
+| `G(X, τ)` | advances every field of `X` in place by `τ`, in steps of `dt` and a last shorter step that ends on `τ` |
+| `L(X, V, τ)` | advances the fields `X` and the perturbations `V` together, `V` by the tangent equation, with the same scheme and steps: the derivative of the discrete flow. `V` is a batch like `X` when `k′ = 1`, or a vector of `k′` such batches, each about the fields of `X`, which are advanced once for all of them. With `forced = true` the tangent equation is forced by the derivative of the right-hand side in the Reynolds number, `-Δω/Re²` |
+| `F(dX, X)` | the time derivative of every field |
+| `S(X, s)` | `ω(x, y) → ω(x + s, y)` for every field, the coefficients times `cis(j s)`; any number of fields |
+| `S(dX, X, 1)` | the generator of the shift, `∂ω/∂x` |
+| `stages(G, X, τ)` | the stages of every step of the flow over `τ` from the fields `X`, which are left as they are, kept for the adjoint |
+| `A(W, S)` | the transpose of the tangent applied to `W`, back over the stages `S` |
 | `dots(X, Y)` | the inner products of the fields one by one, the mean of `ω₁ ω₂`, a real array `(1, 1, B)`: the method of `dots` of MultipleShooting |
 | `realdot(X, Y)` | their sum over the fields |
 
-The first six, and `dots`, are methods of the functions of MultipleShooting, and
-`adjoint!` is a method of `LinearAlgebra.adjoint!`, exported. Every function takes views
-of a batch, `view(X, :, :, b)`. `propagate!`, `tangent!`, `forced!`,
-`stages`, `adjoint!` and `rhs!` first give their input the symmetry of fields, by
-`apply_symmetry!`, so that the flow, its tangent and its adjoint vanish on what
-is not a field.
+Every call takes views of a batch, `view(X, :, :, b)`. The flow, the tangent,
+the right-hand side, `stages` and the adjoint first give their input the
+symmetry of fields, by `apply_symmetry!`, so that the flow, its tangent and its
+adjoint vanish on what is not a field.
 
-Field by field, `propagate!`, `tangent!`, `adjoint!` and `rhs!` give the
-results of OKF with Flows to rounding. `forced!` treats its forcing as an
-explicit term, so that it gives the derivative of the flow in the Reynolds
-number up to the error of the scheme.
+Field by field the flow, the tangent, the adjoint and the right-hand side give
+the results of OKF with Flows to rounding. The forced tangent treats its
+forcing as an explicit term, so that it gives the derivative of the flow in the
+Reynolds number up to the error of the scheme.
 
 ## The adjoint
 
-`adjoint!` is the transpose of the derivative of the discrete flow in the inner
-product of the fields, `dots`. For any batches `V` and `W`, field by field
-and to rounding,
+The adjoint is the transpose of the derivative of the discrete flow in the
+inner product of the fields, `dots`. For any batches `V` and `W`, field by
+field and to rounding,
 
-    dots(tangent!(P, copy(X), V, τ), W) == dots(V, adjoint!(P, stages(P, X, τ), W))
+    dots(L(copy(X), V, τ), W) == dots(V, A(W, stages(G, X, τ)))
 
-It is the adjoint of the scheme in Flows, with
-the explicit term `AdjointTerm`, stepped backwards over the stages of the steps
-of `propagate!`.
+It is the adjoint of the scheme in Flows, with the explicit term `AdjointTerm`,
+stepped backwards over the stages of the steps of the flow.
 `AdjointTerm` is `TangentTerm` read backwards, each step replaced by its
 transpose, the forward transform by the inverse one and the inverse by the
 forward one. It equals the adjoint of the linearised advection,
@@ -164,9 +151,9 @@ The adjoint needs the stages from the last step back, so that they are made
 first, once, and kept:
 
 ```julia
-S = stages(P, X, τ)       # a forward pass from the fields X, every stage kept
-adjoint!(P, S, W)         # a backward pass over them, for this W
-adjoint!(P, S, W₂)        # and for any other, with no new forward pass
+S = stages(G, X, τ)       # a forward pass from the fields X, every stage kept
+A(W, S)                   # a backward pass over them, for this W
+A(W₂, S)                  # and for any other, with no new forward pass
 ```
 
 `S` holds the stages of each of the `N` steps over `τ`, four with the default
@@ -174,7 +161,7 @@ scheme, `4N` batches like `X`. For one field with `n = 33` and steps of 0.01
 this is 14.6 GB over
 1000 time units, whatever the number of segments the orbit is cut into, and
 146 GB over 10⁴. `W` has as many fields as the batch that made `S`. For
-several adjoint fields about each field of `X`, call `adjoint!` once for each,
+several adjoint fields about each field of `X`, call the adjoint once for each,
 over the same `S`.
 
 ## With MultipleShooting
@@ -182,17 +169,29 @@ over the same `S`.
 ```julia
 using MultipleShooting
 
-P = KolmogorovPropagatorDict(n, m, Re, kf; sizes=[(size(X, 3), 1), (size(X, 3), k′)])
-z = ShootingVector(X, [T, s])                     # X an FTFields, the seeds
-F = Residual(P)
-J = Jacobian(P, z)
+m  = size(X, 3)                                   # X an FTFields, the seeds
+z  = ShootingVector(X, [T, s])
+G  = NonlinearPropagator(n, m, Re, kf; B=m)
+L  = TangentPropagator(n, m, Re, kf; B=m)
+Lk = TangentPropagator(n, m, Re, kf; B=m, k′=k′)
+F  = RightHandSide(n, m, Re, kf; B=m)
+S  = XShift()
+
+R = Residual(G; S=S)
+J = Jacobian(L, F, z; S=S, dS=S)
+M = Preconditioner(Lk, F, z; k′=k′, S=S, dS=S)
 ```
 
-The inner product of the fields is the method of `dots` of MultipleShooting
-for a batch of fields, so that the Krylov method, the phase conditions and the
-preconditioner all use it. For a search or a
-continuation with the Reynolds number free, the family of propagators is
-`Re -> KolmogorovPropagatorDict(D, Re)`. The segments have equal lengths.
+Each part of a search takes the objects it calls: the residual the flow, the
+Jacobian the tangent of one perturbation, and the subspace iteration and its
+preconditioner the tangent of `k′`. The inner product of the fields is the
+method of `dots` of MultipleShooting for a batch of fields, so that the Krylov
+method, the phase conditions and the preconditioner all use it. For a search or
+a continuation with the Reynolds number free, the forced tangent is
+`TangentPropagator(…; B=m, forced=true)`, and the family moves every object by
+its second form, one method per type, as
+`family(x::NonlinearPropagator, Re) = NonlinearPropagator(x, Re)`, the shift
+`XShift(S, Re)` itself. The segments have equal lengths.
 
 ## Tests and examples
 
@@ -205,10 +204,10 @@ julia --project=<environment with CUDA> examples/timing.jl gpu 10 1 4 16 64 256 
 
 The tests compare every function with OKF and Flows on a small grid (`n = 8`,
 `m = 12`), field by field, for several batch sizes and on views. They check
-`tangent!` against a centred difference of `propagate!`, with its error
-falling as the square of the increment, `rhs!` against a short step of
-`propagate!`, `forced!` against a centred difference in the Reynolds number,
-and `adjoint!` and `AdjointTerm` against `tangent!` and `TangentTerm` by the
+the tangent against a centred difference of the flow, with its error falling
+as the square of the increment, the right-hand side against a short step of the
+flow, the forced tangent against a centred difference in the Reynolds number,
+and the adjoint and `AdjointTerm` against the tangent and `TangentTerm` by the
 identity of the transpose. They check that the flow commutes with the shift
 along `x`, the rotation by π and the shift-reflect, that the advection keeps
 the energy and the enstrophy, that a call allocates much less than a batch,
@@ -219,7 +218,7 @@ With `DEVICE=gpu` the batches are `CuArray`s. CUDA is a dependency neither of
 the package nor of the test environment: it is loaded from another environment
 of the load path, the global one by default.
 
-`examples/timing.jl` times one `propagate!` and one `tangent!` of `B` fields
+`examples/timing.jl` times the flow and the tangent of `B` fields
 over `τ = 10` at the resolution of the campaigns, `n = 33` and `m = 49`.
 `examples/orbits.jl` reads the orbits and the seeds of the campaigns into
 batches of seeds. A state that must fill several segments is advanced by whole

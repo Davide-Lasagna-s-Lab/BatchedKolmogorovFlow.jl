@@ -17,26 +17,21 @@ loaded, with no dependence of this package on CUDA.
 module BatchedKolmogorovFlow
 
 import LinearAlgebra
-import LinearAlgebra: adjoint!
 import Random
 import AbstractFFTs
 import FFTW
 import Flows
 import OpenKolmogorovFlow
-import MultipleShooting: propagate!, tangent!, forced!, rhs!, shift!, dshift!, dots
+import MultipleShooting: dots
 
-export KolmogorovPropagator,
-       KolmogorovPropagatorDict,
+export NonlinearPropagator,
+       TangentPropagator,
+       AdjointPropagator,
+       RightHandSide,
+       XShift,
        FTFields,
        Fields,
-       propagate!,
-       tangent!,
-       forced!,
-       rhs!,
-       shift!,
-       dshift!,
        stages,
-       adjoint!,
        dots,
        realdot
 
@@ -47,7 +42,13 @@ include("fft.jl")
 include("implicit.jl")
 include("nonlinear.jl")
 include("linearised.jl")
-include("propagator.jl")
-include("propagatordict.jl")
+include("dynamics/devices.jl")
+include("dynamics/chunks.jl")
+include("dynamics/flows.jl")
+include("dynamics/nonlinearpropagator.jl")
+include("dynamics/tangentpropagator.jl")
+include("dynamics/righthandside.jl")
+include("dynamics/xshift.jl")
+include("dynamics/adjointpropagator.jl")
 
 end

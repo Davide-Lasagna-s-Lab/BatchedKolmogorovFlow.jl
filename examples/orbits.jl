@@ -13,7 +13,7 @@
 #     the attributes period, drift and yshift.
 #
 # In both cases the orbit closes as S(Φ_T(x₁), s) = x₁, with S the shift by s along
-# x, shift!(P, x, s).
+# x, XShift()(x, s).
 
 using HDF5
 
@@ -64,18 +64,19 @@ function read_orbit(path::String, n::Int)
     end
 end
 
-# the batch X on the device of the batches of the propagator P, that of its workspace
-on_device(P, X::FTFields) = FTFields(copyto!(similar(parent(P.whole.X), ComplexF64, size(X)), parent(X)))
+# the batch X on the device of the batches of the flow G, that of its fields
+on_device(G, X::FTFields) = FTFields(copyto!(similar(parent(G.whole.X), ComplexF64, size(X)), parent(X)))
 
 """
-    make_seeds(P, orbit, segment) -> X
+    make_seeds(G, orbit, segment) -> X
 
 The seeds of about `T/segment` segments of equal length, a batch on the device
-of the propagator `P`, a `KolmogorovPropagator` of the `N₀` fields of the file. From seeds, `M` a multiple of the `N₀` seeds of the file, each advanced
-in batch to fill its own segment; from an orbit of the campaigns, `M` the divisor
-of its `Ns` instants closest to `T/segment`, and the instants themselves.
+of the flow `G`, a `NonlinearPropagator` of the `N₀` fields of the file.
+From seeds, `M` a multiple of the `N₀` seeds of the file, each advanced in batch
+to fill its own segment; from an orbit of the campaigns, `M` the divisor of its
+`Ns` instants closest to `T/segment`, and the instants themselves.
 """
-function make_seeds(P, orbit, segment::Real)
+function make_seeds(G, orbit, segment::Real)
     N₀ = size(orbit.X, 3)
     if orbit.kind === :seeds
         # ---- the stored seeds, advanced together to fill their segments: whole steps on the grid of
@@ -84,14 +85,14 @@ function make_seeds(P, orbit, segment::Real)
         p = max(1, round(Int, orbit.T / (N₀ * segment)))
         M = N₀ * p
         X = zeros(ComplexF64, size(orbit.X, 1), size(orbit.X, 2), M)
-        Y = on_device(P, orbit.X)
+        Y = on_device(G, orbit.X)
         w = 0
         for q in 1:p
             t = (q - 1) * orbit.T / M
-            v = floor(Int, t / P.dt + 1e-6)
-            v > w && propagate!(P, Y, (v - w) * P.dt)
+            v = floor(Int, t / G.dt + 1e-6)
+            v > w && G(Y, (v - w) * G.dt)
             w = v
-            Z = t > w * P.dt ? propagate!(P, copy(Y), t - w * P.dt) : Y
+            Z = t > w * G.dt ? G(copy(Y), t - w * G.dt) : Y
             X[:, :, q:p:M] .= Array(parent(Z))
         end
     else
@@ -99,5 +100,5 @@ function make_seeds(P, orbit, segment::Real)
         M = argmin(d -> abs(d - orbit.T / segment), filter(d -> N₀ % d == 0, 1:N₀))
         X = Array(parent(orbit.X))[:, :, 1:(N₀ ÷ M):N₀]
     end
-    return on_device(P, FTFields(X))
+    return on_device(G, FTFields(X))
 end
