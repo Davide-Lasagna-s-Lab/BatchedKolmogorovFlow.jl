@@ -257,19 +257,20 @@ conjugates too.
 - `X`, `Y`: two batches of fields of the same size.
 """
 function dots(X::FTFields{n}, Y::FTFields{n}) where {n}
-    # ---- the weighted product of every mode, as a lazy broadcast: an expression to reduce, not
-    #      an array of the size of the batch, with the weights of the rows of X ----
-    #      w_j Re(conj(Ω₁[j, k]) Ω₂[j, k])
-    terms = Broadcast.instantiate(Broadcast.broadcasted((w, x, y) -> w*real(conj(x)*y),
-                                                        X.w,
-                                                        parent(X),
-                                                        parent(Y)))
-
-    # ---- its sum over the modes of every field, the fields kept apart, in one reduction that
-    #      evaluates the terms as it goes, on the device of the coefficients: the result,
-    #      (1, 1, B), is all it allocates ----
-    return mapreduce(identity, +, terms; dims=(1, 2), init=0.0)
+    # ---- the sum of the weighted products over the modes of every field, the fields kept apart,
+    #      in one reduction that evaluates them as it goes, on the device of the coefficients:
+    #      the result, (1, 1, B), is all it allocates ----
+    return mapreduce(identity, +, _products(X, Y); dims=(1, 2), init=0.0)
 end
+
+# the weighted product of every mode of X and Y, as a lazy broadcast: an expression to reduce, not
+# an array of the size of the batch, with the weights of the rows of X,
+#     w_j Re(conj(Ω₁[j, k]) Ω₂[j, k])
+_products(X::FTFields, Y::FTFields) =
+    Broadcast.instantiate(Broadcast.broadcasted((w, x, y) -> w*real(conj(x)*y),
+                                                X.w,
+                                                parent(X),
+                                                parent(Y)))
 
 """
     dot(X, Y) -> Float64
@@ -278,4 +279,5 @@ The inner product of the batches `X` and `Y`, the sum over the fields of their i
 [`dots`](@ref): `dot(X, X)` is the mean of ω² summed over the fields. A method of
 `LinearAlgebra.dot`, weighted as the inner product of the fields, and real.
 """
-LinearAlgebra.dot(X::FTFields{n}, Y::FTFields{n}) where {n} = sum(dots(X, Y))
+LinearAlgebra.dot(X::FTFields{n}, Y::FTFields{n}) where {n} =
+    mapreduce(identity, +, _products(X, Y); init=0.0)

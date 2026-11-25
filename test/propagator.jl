@@ -413,11 +413,13 @@ end
     @test allocated(() -> P.A(W, S)) < one/10
 
     # ---- with the exponential schemes too, over a span with a shorter last step, at which the
-    #      coefficients are made again, as lazy broadcasts, written into the registers with no
-    #      array in between: the flow, the tangent, the stages and the adjoint ----
+    #      coefficients are made again, mode by mode, into the arrays of the viscous term, with no
+    #      array made: the flow, the tangent, the stages and the adjoint ----
+    T = KS.ImplicitTerm(X, Re)
     for (name, coeffs) in ((:ETDRK2, Flows.etdrk2_coeffs), (:ETDRK4, Flows.etdrk4_coeffs))
         E = dynamics(256; scheme=name)
-        @test all(c -> c isa Broadcast.Broadcasted, coeffs(KS.ImplicitTerm(X, Re), dt))
+        @test all(c -> any(c === a for a in T.coefficients), coeffs(T, dt))
+        @test allocated(() -> coeffs(T, dt)) == 0
         @test allocated(() -> E.G(X, 2.5dt)) < one/10
         @test allocated(() -> E.L(X, V, 2.5dt)) < one/10
         S = stages(E.G, X, 2.5dt)
