@@ -237,7 +237,7 @@ end
     # ---- two blocks of three perturbations, each about the three fields ----
     V = random_fields(6)
     Y = batch(Ωs)
-    W = tangents!(P, Y, blocks(copy(V), 2), τ)
+    W = tangents!(P, Y, copy(V), τ)
 
     # ---- block by block as tangent! on the block alone ----
     for a in 1:2
@@ -253,10 +253,8 @@ end
     @test haskey(P.tangents[1], (3, 6))
     @test KS._tangent_storage(P, 3, 6) === KS._tangent_storage(P, 3, 6)
 
-    # ---- perturbations that are not whole blocks of the fields are refused, by their types ----
-    @test_throws MethodError tangents!(P, batch(Ωs), random_fields(4), τ)
-    @test_throws MethodError tangents!(P, batch(Ωs), V, τ)
-    @test_throws ArgumentError blocks(random_fields(4), 3)
+    # ---- perturbations that are not whole blocks of the fields are refused ----
+    @test_throws ArgumentError tangents!(P, batch(Ωs), random_fields(4), τ)
 end
 
 @testset "another Reynolds number, and forced!   " begin
@@ -387,7 +385,7 @@ DEVICE == "cpu" && @testset "a batch cut among tasks                " begin
         for B in (5, tasks, 1)
             X = batch(Ωs[1:B])
             V = random_fields(B; seed=4)
-            W = blocks(random_fields(2B; seed=5), 2)
+            W = random_fields(2B; seed=5)
 
             @test reldiff(propagate!(P, copy(X), τ), propagate!(P₁, copy(X), τ)) < 1e-13
             @test reldiff(tangent!(P, copy(X), copy(V), τ), tangent!(P₁, copy(X), copy(V), τ)) < 1e-13

@@ -21,9 +21,8 @@ A field is real and periodic on `[0, 2π)²`, with the Fourier coefficients
     ω(x, y) = Σⱼ Σₖ Ω[j, k] exp(i (j x + k y)),   j, k = -n, …, n.
 
 Only the coefficients with `j ≥ 0` are kept, the others being their conjugates.
-A batch of `B` fields is an `FTFields{n, M, L}`, an array `X` of size
-`(n+1, 2n+1, B)`, and an `AbstractSeeds{M, L}` of MultipleShooting: `L` blocks
-of `M` fields, one block unless `FTFields(data; L=L)` says otherwise. Field `b` is `X[:, :, b]`, with `j = 0, …, n` along `x` down
+A batch of `B` fields is an `FTFields{n}`, an array `X` of size
+`(n+1, 2n+1, B)`. Field `b` is `X[:, :, b]`, with `j = 0, …, n` along `x` down
 the rows and `k` along `y` across the columns, in the order
 `0, 1, …, n, -n, …, -1`. Two conditions make such a slice a field: in the row
 `j = 0` the entries at `k` and `-k` are conjugates, and the mean is zero.
@@ -108,7 +107,7 @@ not run at the same time.
 |---|---|
 | `propagate!(P, X, τ)` | advances every field of `X` in place by `τ`, in steps of `dt` and a last shorter step that ends on `τ` |
 | `tangent!(P, X, V, τ)` | advances the fields `X` and the perturbations `V` together, `V` by the tangent equation, with the same scheme and steps: the derivative of the discrete flow |
-| `tangents!(P, X, V, τ)` | as `tangent!`, for `k′` blocks of perturbations in `V`, an `FTFields{n, M, k′}`, one after the other, each about the fields of `X`, an `FTFields{n, M, 1}`, which are advanced once for all the blocks |
+| `tangents!(P, X, V, τ)` | as `tangent!`, for `k′` blocks of perturbations in `V`, one after the other, each about the fields of `X`, which are advanced once for all the blocks |
 | `forced!(P, X, V, τ)` | as `tangent!`, with the tangent equation forced by the derivative of the right-hand side in the Reynolds number, `-Δω/Re²` |
 | `rhs!(P, F, X)` | the time derivative of every field |
 | `shift!(P, X, s)` | `ω(x, y) → ω(x + s, y)` for every field, the coefficients times `cis(j s)` |
@@ -176,8 +175,9 @@ F = Residual(P)
 J = Jacobian(P, z)
 ```
 
-The seeds carry the inner product of the fields, `realdots`, so that the Krylov
-method, the phase conditions and the preconditioner all use it. For a search or a
+The inner product of the fields, `realdots`, is the `dots` of MultipleShooting
+for a batch of fields, so that the Krylov method, the phase conditions and the
+preconditioner all use it. For a search or a
 continuation with the Reynolds number free, the family of propagators is
 `Re -> KolmogorovPropagator(P, Re)`. The segments have equal lengths.
 

@@ -95,9 +95,6 @@ end
 # the batch X + a Y
 plus(X, a, Y) = FTFields(X .+ a .* Y)
 
-# the batch V as k blocks of perturbations, for tangents!
-blocks(V, k) = FTFields(parent(V); L=k)
-
 # the bundle of the fields X with their perturbations V, k′ blocks of as many, and the fields and
 # the perturbations of a bundle Z of B fields, as two batches
 bundle(X, V) = KS._bundle!(dev(FTFields(zeros(ComplexF64, n + 1, 2n + 1, size(X, 3) + size(V, 3)))), X, V)
