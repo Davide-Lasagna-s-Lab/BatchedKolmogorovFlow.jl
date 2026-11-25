@@ -75,21 +75,23 @@ struct TangentPropagator{K}
             throw(ArgumentError("scheme must be one of Flows.imex_schemes, " *
                                 "$(sort(collect(keys(Flows.imex_schemes))))"))
 
-        # ---- the bundle of b fields with their k′ perturbations, and the flow of the tangent
-        #      equation for bundles like it, forced or not ----
-        function tangent(b)
-            Z    = _batch(n, (1 + k′)*b, device)
+        # ---- the chunk of the fields `fields`: the bundle of as many fields with their k′
+        #      perturbations, and the flow of the tangent equation that advances it, forced or
+        #      not ----
+        function chunk(fields)
+            Z    = FTFields(n, (1 + k′)*length(fields); device=device)
             term = TangentTerm(Z, k′, m, kf)
             ϕ    = Flows.flow(forced ? ForcedTangentTerm(term, Re) : term,
                               ImplicitTerm(Re),
                               Flows.imex_schemes[scheme](Z),
                               Flows.TimeStepConstant(dt))
-            return (Z = Z,
-                    ϕ = ϕ)
+            return (fields = fields,
+                    Z      = Z,
+                    ϕ      = ϕ)
         end
 
-        # ---- the chunks of the tasks, each with its bundle and its flow ----
-        chunks = [(fields = fields, tangent(length(fields))...) for fields in _ranges(B, tasks)]
+        # ---- the chunks of the tasks ----
+        chunks = [chunk(fields) for fields in _ranges(B, tasks)]
 
         return new{eltype(chunks)}(Float64(Re),
                                    Float64(dt),
@@ -127,8 +129,11 @@ function _advance!(L::TangentPropagator, X::FTFields, V, τ::Real)
     # ---- every task advances its chunk of the fields, each with its perturbations: with one
     #      task, the whole batch ----
     _foreach_chunk(L.chunks) do chunk
-        # ---- every field of the chunk with its perturbations in the bundle of its flow, with
-        #      the symmetry of fields ----
+        # ---- every field of the chunk with its perturbations copied into the bundle of its
+        #      flow, with the symmetry of fields: the flow advances the fields and their
+        #      perturbations as one batch, which the fields of the call and the batches of their
+        #      perturbations are not, and works on the bundle it was made for, as the flow of the
+        #      NonlinearPropagator does ----
         apply_symmetry!(_bundle!(chunk.Z, X, V, chunk.fields))
 
         # ---- advanced together, the fields once, and back ----

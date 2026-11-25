@@ -53,7 +53,7 @@ struct AdjointPropagator{WT<:FTFields, ΨT<:Flows.Flow}
 
         # ---- the adjoint fields, the adjoint term for batches like them, and the registers of
         #      the scheme in the mode of the discrete adjoint ----
-        W = _batch(n, B, device)
+        W = FTFields(n, B; device=device)
         ψ = Flows.flow(AdjointTerm(W, m),
                        ImplicitTerm(Re),
                        Flows.imex_schemes[scheme](W, Flows.DiscreteMode(true)),
@@ -79,7 +79,8 @@ function (A::AdjointPropagator)(W::FTFields, S::Flows.RAMStageCache)
     size(W, 3) == A.B ||
         throw(ArgumentError("an adjoint propagator of $(A.B) fields called with $(size(W, 3))"))
 
-    # ---- the adjoint fields in those of the flow, with the symmetry of fields ----
+    # ---- the adjoint fields copied into the batch of the flow, with the symmetry of fields, as
+    #      in the NonlinearPropagator: the flow works on the batch it was made for ----
     apply_symmetry!(copyto!(A.W, W))
 
     # ---- back over the stages, from the last step to the first ----

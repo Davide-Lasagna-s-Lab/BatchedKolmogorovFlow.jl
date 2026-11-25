@@ -5,8 +5,9 @@
 # The objects of the dynamics of a search, this flow, the tangent (tangentpropagator.jl), the
 # right-hand side (righthandside.jl) and the shift (xshift.jl), are callables, each with its task
 # and the workspaces of that task, made with it, so that a call allocates no batch. The adjoint
-# (adjointpropagator.jl) is one more, which a search does not call. They share the arrays of a
-# device (devices.jl), and the propagators the chunks of their tasks on the CPU (chunks.jl).
+# (adjointpropagator.jl) is one more, which a search does not call. They make their batches on the
+# device, FTFields(n, B; device), and the propagators share the chunks of their tasks on the CPU
+# (chunks.jl).
 
 """
     NonlinearPropagator(n, m, Re, kf; B, dt=0.01, scheme=:CB3R2R3e, device=:cpu, tasks=1)
@@ -48,7 +49,7 @@ propagators that share their workspaces must not run at the same time.
   so that the result is that of one task, to rounding. Start Julia with at least as many threads,
   `julia -t 16` for `tasks=16`.
 """
-struct NonlinearPropagator{K, E}
+struct NonlinearPropagator{K}
          n::Int         # the largest wavenumber of the fields
          m::Int         # the grid has 2m+2 points along each direction
         Re::Float64     # the Reynolds number
@@ -57,11 +58,11 @@ struct NonlinearPropagator{K, E}
     scheme::Symbol      # the scheme of Flows.jl
          B::Int         # the fields of a batch
     chunks::Vector{K}   # the chunks of the fields, one per task, each with its flow
-     whole::E           # the fields and the flow of the whole batch, of stages, on one task
+     whole::K           # the chunk of all the fields, for stages, which runs on one task
 
     # A chunk (chunks.jl) is a named tuple (fields, X, ϕ): the range of its fields, a batch of as
-    # many, and the flow of the equation of the chunk, made once, with its explicit term and the
-    # registers of its scheme. The whole batch is a named tuple (X, ϕ).
+    # many, and the flow of the equation that advances it, made once, with its explicit term and
+    # the registers of its scheme.
     function NonlinearPropagator(n::Int,
                                  m::Int,
                                 Re::Real,
@@ -84,46 +85,47 @@ struct NonlinearPropagator{K, E}
             throw(ArgumentError("scheme must be one of Flows.imex_schemes, " *
                                 "$(sort(collect(keys(Flows.imex_schemes))))"))
 
-        # ---- b fields, and the flow of the equation for batches like them ----
-        function equation(b)
-            X = _batch(n, b, device)
+        # ---- the chunk of the fields `fields`: a batch of as many, and the flow of the equation
+        #      that advances it ----
+        function chunk(fields)
+            X = FTFields(n, length(fields); device=device)
             ϕ = Flows.flow(ExplicitTerm(X, m, kf),
                            ImplicitTerm(Re),
                            Flows.imex_schemes[scheme](X),
                            Flows.TimeStepConstant(dt))
-            return (X = X,
-                    ϕ = ϕ)
+            return (fields = fields,
+                    X      = X,
+                    ϕ      = ϕ)
         end
 
-        # ---- the chunks of the tasks, each with its fields and its flow ----
-        chunks = [(fields = fields, equation(length(fields))...) for fields in _ranges(B, tasks)]
+        # ---- the chunks of the tasks, and that of all the fields, for stages, which runs on one
+        #      task: the chunk of the one task when there is one ----
+        chunks = [chunk(fields) for fields in _ranges(B, tasks)]
+        whole  = length(chunks) == 1 ? only(chunks) : chunk(1:B)
 
-        # ---- the whole batch, for stages, which runs on one task ----
-        whole = length(chunks) == 1 ? (X = chunks[1].X, ϕ = chunks[1].ϕ) : equation(B)
-
-        return new{eltype(chunks), typeof(whole)}(n,
-                                                  m,
-                                                  Float64(Re),
-                                                  kf,
-                                                  Float64(dt),
-                                                  scheme,
-                                                  B,
-                                                  chunks,
-                                                  whole)
+        return new{eltype(chunks)}(n,
+                                   m,
+                                   Float64(Re),
+                                   kf,
+                                   Float64(dt),
+                                   scheme,
+                                   B,
+                                   chunks,
+                                   whole)
     end
 
     # the propagator G at another Reynolds number, with its fields, terms and registers, shared,
     # and its flows made again there
-    NonlinearPropagator(G::NonlinearPropagator{K, E}, Re::Real) where {K, E} =
-        new{K, E}(G.n,
-                  G.m,
-                  Float64(Re),
-                  G.kf,
-                  G.dt,
-                  G.scheme,
-                  G.B,
-                  [(c..., ϕ = _reynolds(c.ϕ, Re)) for c in G.chunks],
-                  (G.whole..., ϕ = _reynolds(G.whole.ϕ, Re)))
+    NonlinearPropagator(G::NonlinearPropagator{K}, Re::Real) where {K} =
+        new{K}(G.n,
+               G.m,
+               Float64(Re),
+               G.kf,
+               G.dt,
+               G.scheme,
+               G.B,
+               [(c..., ϕ = _reynolds(c.ϕ, Re)) for c in G.chunks],
+               (G.whole..., ϕ = _reynolds(G.whole.ϕ, Re)))
 end
 
 function (G::NonlinearPropagator)(X::FTFields, τ::Real)
@@ -135,7 +137,12 @@ function (G::NonlinearPropagator)(X::FTFields, τ::Real)
     _foreach_chunk(G.chunks) do chunk
         Xc = view(X, :, :, chunk.fields)
 
-        # ---- the fields of the chunk in those of its flow, with the symmetry of fields ----
+        # ---- the fields of the chunk copied into the batch of its flow, with the symmetry of
+        #      fields. The flow works on the batch it was made for: the registers of its scheme
+        #      are of the type of that batch, on which the steps of Flows.jl dispatch, and the
+        #      plans of the transforms of its term are made for its arrays. A view of the fields
+        #      of the call is another type, and may be laid out otherwise. The copy and the copy
+        #      back cost nothing next to the steps, each of several transforms of the batch ----
         apply_symmetry!(copyto!(chunk.X, Xc))
 
         # ---- advanced, and back ----
@@ -165,7 +172,8 @@ function stages(G::NonlinearPropagator, X::FTFields, τ::Real)
 
     whole = G.whole
 
-    # ---- the fields in those of the flow, with the symmetry of fields ----
+    # ---- the fields copied into the batch of the flow, with the symmetry of fields, for the
+    #      reasons of the call above; X is left as it is ----
     apply_symmetry!(copyto!(whole.X, X))
 
     # ---- advanced, the stages of every step kept, in copies that Flows.jl makes ----

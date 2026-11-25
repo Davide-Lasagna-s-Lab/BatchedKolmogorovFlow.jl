@@ -16,6 +16,12 @@
     @test all(parent(OKF.FTField(X, i, m)) == parent(Ωs[i]) for i in 1:3)
     @test_throws ArgumentError FTFields(zeros(ComplexF64, 4, 8, 2))
 
+    # ---- a batch of zeros on the device ----
+    Z = FTFields(n, 2; device=DEVICE)
+    @test Z isa FTFields{n} && size(Z) == (n + 1, 2n + 1, 2) && parent(Z) isa ARRAY
+    @test all(iszero, cpu(Z))
+    @test_throws ArgumentError FTFields(n, 2; device=:tpu)
+
     # ---- a batch like it, of more fields, a copy, a view of some fields, and a broadcast into it ----
     @test similar(X) isa FTFields{n}
     @test similar(X, ComplexF64, (n + 1, 2n + 1, 7)) isa FTFields{n}

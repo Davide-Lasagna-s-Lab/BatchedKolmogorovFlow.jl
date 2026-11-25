@@ -40,7 +40,7 @@ struct RightHandSide{XT<:FTFields, ET<:ExplicitTerm}
             throw(ArgumentError("device must be :cpu or :gpu"))
 
         # ---- the fields, and the explicit term for batches like them ----
-        X        = _batch(n, B, device)
+        X        = FTFields(n, B; device=device)
         explicit = ExplicitTerm(X, m, kf)
 
         return new{typeof(X), typeof(explicit)}(Float64(Re),
@@ -62,7 +62,8 @@ function (F::RightHandSide)(dX::FTFields, X::FTFields)
     size(X, 3) == F.B ||
         throw(ArgumentError("a right-hand side of $(F.B) fields called with $(size(X, 3))"))
 
-    # ---- the fields, with the symmetry of fields ----
+    # ---- the fields copied into those of the term, with the symmetry of fields: X is left as
+    #      it is, and the plans of the transforms of the term are made for the arrays of F.X ----
     Ω = apply_symmetry!(copyto!(F.X, X))
 
     # ---- advection and forcing ----

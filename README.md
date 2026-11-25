@@ -76,7 +76,7 @@ tasks. The other functions run on one. Start Julia with at least `N` threads,
 | `dynamics/righthandside.jl` | `RightHandSide`, the time derivative of the fields |
 | `dynamics/xshift.jl` | `XShift`, the shift along `x` and its generator |
 | `dynamics/adjointpropagator.jl` | `AdjointPropagator`, the transpose of the tangent, back over the stages |
-| `dynamics/devices.jl`, `chunks.jl`, `flows.jl` | what they share: the batches on a device, the chunks of the tasks on the CPU, the flows of Flows.jl at another Reynolds number |
+| `dynamics/chunks.jl`, `flows.jl` | what they share: the chunks of the tasks on the CPU, the flows of Flows.jl at another Reynolds number |
 
 The advection is written in the form of Basdevant (1983),
 `(∂²/∂x² - ∂²/∂y²)(u v) + ∂²/∂x∂y (v² - u²)`, which needs the velocity alone on

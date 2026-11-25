@@ -19,6 +19,7 @@
 """
     FTFields(data)
     FTFields(Ωs)
+    FTFields(n, B; device=:cpu)
 
 A batch of `B` vorticity fields in Fourier space, with the largest wavenumber `n` in its type,
 `FTFields{n}`. It is an array of size `(n+1, 2n+1, B)`: `X[j+1, c, b]` is the coefficient of
@@ -36,6 +37,8 @@ inner product of the fields, [`dots`](@ref), a column like `X.j`. The batches ma
 - `data`: the coefficients, a complex array `(n+1, 2n+1, B)`, kept, not copied.
 - `Ωs`: or a vector of `B` fields of OpenKolmogorovFlow, `FTField{n, m}`, copied to a batch on
   the CPU. `FTField(X, b, m)` gives field `b` of a batch back.
+- `n::Int`, `B::Int`: or the largest wavenumber and the number of fields of a batch of zeros,
+  on the device `device`, `:cpu` or `:gpu`, once CUDA is loaded, `using CUDA`.
 """
 struct FTFields{n, A<:AbstractArray{ComplexF64, 3}, W<:AbstractMatrix{Float64}} <: AbstractArray{ComplexF64, 3}
     data::A # the coefficients, (n+1, 2n+1, B)
@@ -106,6 +109,27 @@ function OpenKolmogorovFlow.FTField(X::FTFields{n}, b::Int, m::Int) where {n}
     end
 
     return Ω
+end
+
+
+# ---------------------------------------------------------------------------- #
+# a batch on a device                                                          #
+# ---------------------------------------------------------------------------- #
+
+# the arrays of the batches on a device: Array on the CPU, CuArray on the GPU, a method that the
+# extension of the package for CUDA adds once CUDA is loaded
+_array(::Val{:cpu}) = Array
+_array(::Val)       = throw(ArgumentError("device=:gpu needs CUDA: `using CUDA` first"))
+
+function FTFields(n::Int, B::Int; device::Symbol=:cpu)
+    # ---- input checks ----
+    device in (:cpu, :gpu) ||
+        throw(ArgumentError("device must be :cpu or :gpu"))
+
+    # ---- B fields of zeros, on the device ----
+    data = _array(Val(device)){ComplexF64}(undef, n + 1, 2n + 1, B)
+
+    return FTFields(fill!(data, 0))
 end
 
 
