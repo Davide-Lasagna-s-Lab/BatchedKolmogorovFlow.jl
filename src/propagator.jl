@@ -65,21 +65,19 @@ The second form is the propagator of `P` at another Reynolds number. It shares t
   search does not call.
 """
 struct KolmogorovPropagator
-           n::Int                       # the largest wavenumber of the fields
-           m::Int                       # the grid has 2m+2 points along each direction
-          Re::Float64                   # the Reynolds number
-          kf::Int                       # the wavenumber of the forcing
-          dt::Float64                   # the time step
-      scheme::Symbol                    # the scheme of Flows.jl
-           B::Int                       # the fields of a batch
-          k′::Int                       # the perturbations of every field, 0 for none
-      chunks::Vector{UnitRange{Int}}    # the fields of every task
-    equation::Vector{Any}               # the workspace of the equation of every task
-     tangent::Vector{Any}               # that of the tangent equation of every task, if k′ ≥ 1
-       whole::Any                       # that of the equation for the whole batch, on one task
-     adjoint::Any                       # that of the adjoint for the whole batch, or nothing
+          n::Int        # the largest wavenumber of the fields
+          m::Int        # the grid has 2m+2 points along each direction
+         Re::Float64    # the Reynolds number
+         kf::Int        # the wavenumber of the forcing
+         dt::Float64    # the time step
+     scheme::Symbol     # the scheme of Flows.jl
+          B::Int        # the fields of a batch
+         k′::Int        # the perturbations of every field, 0 for none
+      tasks::Vector     # every task, its chunk of the fields with the workspaces of the chunk
+      whole::Any        # the workspace of the equation for the whole batch, on one task
+    adjoint::Any        # that of the adjoint for the whole batch, or nothing
 
-    # The workspace is a named tuple,
+    # A workspace is a named tuple,
     #
     #     of the equation   (X, V, explicit, scheme)    the fields, a second batch, the explicit
     #                                                   term, the registers of the scheme
@@ -89,8 +87,10 @@ struct KolmogorovPropagator
     #     of the adjoint    (term, scheme)              its term, the registers in the mode of
     #                                                   the discrete adjoint
     #
-    # On more than one task (see the tasks below) every task has the workspaces of its chunk of
-    # fields, and the methods that run on one task that of the whole batch.
+    # and a task (see the tasks below) is a named tuple (fields, equation, tangent): the fields of
+    # its chunk, a range, and the workspaces of the chunk, of the equation and of the tangent
+    # equation, nothing if k′ = 0. The methods that run on one task use the workspaces of the whole
+    # batch, which are those of the task when there is one.
     function KolmogorovPropagator(n::Int,
                                   m::Int,
                                  Re::Real,
@@ -121,25 +121,40 @@ struct KolmogorovPropagator
         batch(b)              = FTFields(similar(template, ComplexF64, (n + 1, 2n + 1, b)))
         registers(X, mode...) = Flows.imex_schemes[scheme](X, mode...)
 
-        # ---- the workspaces of the equation, the tangent and the adjoint, of b fields ----
+        # ---- the workspaces of b fields: of the equation, of the tangent equation, and of the
+        #      adjoint ----
         function equation(b)
             X = batch(b)
-            return (X = X, V = similar(X), explicit = ExplicitTerm(X, m, kf), scheme = registers(X))
+            return (X        = X,
+                    V        = similar(X),
+                    explicit = ExplicitTerm(X, m, kf),
+                    scheme   = registers(X))
         end
         function tangent(b)
             Z = batch((1 + k′)*b)
-            return (Z = Z, term = TangentTerm(Z, k′, m, kf), scheme = registers(Z))
+            return (Z      = Z,
+                    term   = TangentTerm(Z, k′, m, kf),
+                    scheme = registers(Z))
         end
         function backward(b)
             X = batch(b)
-            return (term = AdjointTerm(X, m), scheme = registers(X, Flows.DiscreteMode(true)))
+            return (term   = AdjointTerm(X, m),
+                    scheme = registers(X, Flows.DiscreteMode(true)))
         end
 
-        # ---- the chunks of the tasks, the workspaces of the equation and of the tangent of
-        #      every chunk, and those of the whole batch ----
-        t      = min(tasks, B)
-        chunks = [(B*(c - 1) ÷ t + 1):(B*c ÷ t) for c in 1:t]
-        eq     = Any[equation(length(r)) for r in chunks]
+        # ---- every task: its chunk, t ranges of fields of sizes as equal as can be, and the
+        #      workspaces of the chunk ----
+        t    = min(tasks, B)
+        work = map(1:t) do c
+            fields = (B*(c - 1) ÷ t + 1):(B*c ÷ t)
+            (fields   = fields,
+             equation = equation(length(fields)),
+             tangent  = k′ >= 1 ? tangent(length(fields)) : nothing)
+        end
+
+        # ---- the workspaces of the whole batch, for the methods that run on one task ----
+        whole = t == 1 ? work[1].equation : equation(B)
+        back  = adjoint ? backward(B) : nothing
 
         return new(n,
                    m,
@@ -149,14 +164,12 @@ struct KolmogorovPropagator
                    scheme,
                    B,
                    k′,
-                   chunks,
-                   eq,
-                   Any[tangent(length(r)) for r in chunks if k′ >= 1],
-                   t == 1 ? eq[1] : equation(B),
-                   adjoint ? backward(B) : nothing)
+                   work,
+                   whole,
+                   back)
     end
 
-    # the propagator of P at another Reynolds number, with its workspace, shared
+    # the propagator of P at another Reynolds number, with its workspaces, shared
     KolmogorovPropagator(P::KolmogorovPropagator, Re::Real) =
         new(P.n,
             P.m,
@@ -166,9 +179,7 @@ struct KolmogorovPropagator
             P.scheme,
             P.B,
             P.k′,
-            P.chunks,
-            P.equation,
-            P.tangent,
+            P.tasks,
             P.whole,
             P.adjoint)
 end
@@ -259,9 +270,9 @@ function propagate!(P::KolmogorovPropagator, X::FTFields, τ::Real)
     _check(P, size(X, 3))
 
     # ---- every task advances its chunk of the fields: with one task, the whole batch ----
-    _foreach_chunk(P) do c, fields
-        w     = P.equation[c]
-        chunk = view(X, :, :, fields)
+    _foreach_task(P) do task
+        w     = task.equation
+        chunk = view(X, :, :, task.fields)
 
         # ---- the flow of the equation, at the Reynolds number of P ----
         ϕ = Flows.flow(w.explicit,
@@ -478,20 +489,20 @@ rhs!(D::Propagators, F::FTFields, X::FTFields) = rhs!(_fields(D, size(X, 3)), F,
 # others. The fields of a batch do not act on one another, a field with its perturbations being
 # one segment of an orbit, so that the chunks are separate integrations and the result is that of
 # one task. The tasks run at the same time and cannot share arrays or plans: each has its own
-# workspace, made with the propagator.
+# workspaces, made with the propagator.
 
-# f(c, fields) for every task c of the propagator P and the fields of its chunk. A batch of fewer
-# fields than tasks gives one field to each of as many tasks. Task c always runs on thread c, so
-# that its workspace is used by the thread that wrote it first and stays in the memory next to
-# that core.
-function _foreach_chunk(f, P::KolmogorovPropagator)
+# f(task) for every task of the propagator P, each with its chunk of the fields and its
+# workspaces. A batch of fewer fields than tasks gives one field to each of as many tasks. Task c
+# always runs on thread c, so that its workspaces are used by the thread that wrote them first and
+# stay in the memory next to that core.
+function _foreach_task(f, P::KolmogorovPropagator)
     # ---- one task: the whole batch, with no threads ----
-    length(P.chunks) == 1 &&
-        return f(1, P.chunks[1])
+    length(P.tasks) == 1 &&
+        return f(P.tasks[1])
 
     # ---- every task on its own thread ----
-    Threads.@threads :static for c in eachindex(P.chunks)
-        f(c, P.chunks[c])
+    Threads.@threads :static for task in P.tasks
+        f(task)
     end
 
     return nothing
@@ -513,8 +524,8 @@ function _advance!(P::KolmogorovPropagator, X::FTFields, V, τ::Real, wrap=ident
 
     # ---- every task advances its chunk of the fields, each with its perturbations: with one
     #      task, the whole batch ----
-    _foreach_chunk(P) do c, fields
-        w = P.tangent[c]
+    _foreach_task(P) do task
+        w = task.tangent
 
         # ---- the flow of the equation with its tangent, at the Reynolds number of P ----
         ϕ = Flows.flow(wrap(w.term),
@@ -524,11 +535,11 @@ function _advance!(P::KolmogorovPropagator, X::FTFields, V, τ::Real, wrap=ident
 
         # ---- every field of the chunk with its perturbations in the bundle of the flow, with
         #      the symmetry of fields ----
-        apply_symmetry!(_bundle!(w.Z, X, V, fields))
+        apply_symmetry!(_bundle!(w.Z, X, V, task.fields))
 
         # ---- advanced together, the fields once, and back ----
         ϕ(w.Z, (0, τ))
-        _unbundle!(X, V, w.Z, fields)
+        _unbundle!(X, V, w.Z, task.fields)
     end
 
     return V

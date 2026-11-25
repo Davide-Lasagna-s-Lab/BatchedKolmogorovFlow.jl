@@ -19,10 +19,10 @@ end
     # ---- what it holds: its size, and its workspace on the device ----
     @test (P.n, P.m, P.Re, P.kf, P.dt, P.B, P.k′) == (n, m, Re, kf, dt, 3, 2)
     @test parent(P.whole.X) isa ARRAY{ComplexF64, 3}
-    @test size(P.tangent[1].Z, 3) == 9
+    @test size(P.tasks[1].tangent.Z, 3) == 9
     @test P.adjoint === nothing
-    @test isempty(KolmogorovPropagator(n, m, Re, kf; B=1).tangent)
-    @test length(KolmogorovPropagator(n, m, Re, kf; B=5, k′=1, tasks=3).chunks) == 3
+    @test KolmogorovPropagator(n, m, Re, kf; B=1).tasks[1].tangent === nothing
+    @test length(KolmogorovPropagator(n, m, Re, kf; B=5, k′=1, tasks=3).tasks) == 3
     @test KolmogorovPropagator(n, m, 40, kf; B=1).Re === 40.0
     @test KolmogorovPropagator(n, m, Re, kf; B=1).dt == 0.01
 
@@ -294,7 +294,7 @@ end
     #      made there, and leaves the first as it was ----
     Q = KolmogorovPropagator(P, 35.0)
     R = KolmogorovPropagator(n, m, 35.0, kf; B=3, k′=1, dt=dt, device=DEVICE)
-    @test Q.whole === P.whole && Q.tangent === P.tangent
+    @test Q.tasks === P.tasks && Q.whole === P.whole
     @test Q.Re == 35.0 && P.Re == Re
     @test cpu(propagate!(Q, batch(Ωs), 1.234)) == cpu(propagate!(R, batch(Ωs), 1.234))
     @test cpu(tangent!(Q, batch(Ωs), batch(Λs), 1.234)) == cpu(tangent!(R, batch(Ωs), batch(Λs), 1.234))
@@ -423,7 +423,7 @@ DEVICE === :cpu && @testset "a batch cut among tasks                " begin
         end
 
         # ---- every task has its chunk: of 5 fields, 2 and 3, or 1, 2 and 2 ----
-        @test P[5, 1].chunks == (tasks == 2 ? [1:2, 3:5] : [1:1, 2:3, 4:5])
+        @test [task.fields for task in P[5, 1].tasks] == (tasks == 2 ? [1:2, 3:5] : [1:1, 2:3, 4:5])
 
         # ---- the other methods run on one task, as those of one task ----
         X = batch(Ωs)
