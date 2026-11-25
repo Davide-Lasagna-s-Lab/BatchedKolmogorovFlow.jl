@@ -14,8 +14,8 @@ The equation, its terms and their names are those of OpenKolmogorovFlow.jl
 Runge–Kutta scheme `CB3R2R3e` by default, or `CNRK2`, `CB3R2R2`, `CB3R2R3c` or
 `CB4R3R4`, with the viscous term implicit, or the exponential `ETDRK2` or
 `ETDRK4`, with the viscous term exact, by the keyword `scheme`. OKF, Flows and
-MultipleShooting are
-dependencies that are not registered: develop them in the environment.
+MultipleShooting are dependencies that are not registered: develop them in the
+environment.
 
 ## The state
 
