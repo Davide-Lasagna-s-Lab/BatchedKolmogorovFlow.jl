@@ -51,7 +51,7 @@ t_okf = @elapsed G(copy(Ω), (0, TAU))
 # ---- batches, a propagator of each size, the workspaces of the size before freed first ----
 for B in BS
     GC.gc()
-    P = KolmogorovPropagator(n, m, Re, kf; B=B, k′=1, dt=0.01, array=ARRAY)
+    P = KolmogorovPropagator(n, m, Re, kf; B=B, k′=1, dt=0.01, device=Symbol(DEVICE))
     X = FTFields(ARRAY(repeat(parent(FTFields([Ω])), 1, 1, B)))
     V = FTFields(ARRAY(repeat(parent(FTFields([Ω])), 1, 1, B)))
 

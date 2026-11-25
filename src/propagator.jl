@@ -16,7 +16,7 @@
 # of a propagator on the CPU and the advance of fields with their perturbations.
 
 """
-    KolmogorovPropagator(n, m, Re, kf; B, k′=0, dt=0.01, scheme=:CB3R2R3e, array=Array, tasks=1,
+    KolmogorovPropagator(n, m, Re, kf; B, k′=0, dt=0.01, scheme=:CB3R2R3e, device=:cpu, tasks=1,
                          adjoint=false)
     KolmogorovPropagator(P, Re)
 
@@ -24,9 +24,9 @@ The flow of two-dimensional Kolmogorov flow on batches of `B` vorticity fields w
 perturbations each, for the searches of MultipleShooting.jl: [`propagate!`](@ref),
 [`tangent!`](@ref), [`forced!`](@ref), [`rhs!`](@ref), [`shift!`](@ref) and [`dshift!`](@ref),
 and the transpose of the tangent, [`adjoint!`](@ref), over the stages kept by
-[`stages`](@ref). A batch is an [`FTFields`](@ref) on an array of type `array`, the Fourier
-coefficients of `B` fields. Field by field the results are those of OpenKolmogorovFlow with the
-same scheme and steps, to rounding.
+[`stages`](@ref). A batch is an [`FTFields`](@ref), the Fourier coefficients of `B` fields, on
+the CPU or on the GPU. Field by field the results are those of OpenKolmogorovFlow with the same
+scheme and steps, to rounding.
 
 The propagator is of one size, and holds the workspace of that size, made with it, so that a
 call allocates no batch, but for the stages that [`stages`](@ref) returns. It takes batches of
@@ -49,9 +49,11 @@ The second form is the propagator of `P` at another Reynolds number. It shares t
   one.
 - `scheme::Symbol=:CB3R2R3e`: the implicit–explicit scheme of Flows.jl, one of
   `Flows.imex_schemes`, `:CNRK2`, `:CB3R2R2`, `:CB3R2R3e`, `:CB3R2R3c` or `:CB4R3R4`, of two,
-  three, four, four and six stages per step and of order two, two, three, three and four.
-  Flows.jl has no adjoint of `:CB4R3R4`, so that [`adjoint!`](@ref) is not available with it.
-- `array::Type=Array`: the type of the batches, `Array`, or `CuArray` once CUDA is loaded.
+  three, four, four and six stages per step and of order two, two, three, three and four. The
+  exponential schemes of `Flows.imex_schemes` need the coefficients of their linear part, which
+  the viscous term does not give yet.
+- `device::Symbol=:cpu`: where the batches live, `:cpu`, on `Array`s, or `:gpu`, on `CuArray`s,
+  once CUDA is loaded, `using CUDA`, which is not a dependency of the package.
 - `tasks::Int=1`: how many tasks advance a batch on the CPU. An operation on an array runs on
   one core, so that one task advances a whole batch on one core. With more tasks the batch is cut
   into as many chunks of fields, and every task advances its chunk as a batch of its own, on its
@@ -97,7 +99,7 @@ struct KolmogorovPropagator
                                  k′::Int=0,
                                  dt::Real=0.01,
                              scheme::Symbol=:CB3R2R3e,
-                              array::Type=Array,
+                             device::Symbol=:cpu,
                               tasks::Int=1,
                             adjoint::Bool=false)
         # ---- input checks ----
@@ -105,17 +107,17 @@ struct KolmogorovPropagator
             throw(ArgumentError("the grid must dealias the products, 2m + 2 at least 3n + 1"))
         1 <= kf <= n ||
             throw(ArgumentError("the forcing wavenumber must be in 1:n"))
+        device in (:cpu, :gpu) ||
+            throw(ArgumentError("device must be :cpu or :gpu"))
         B >= 1 && k′ >= 0 ||
             throw(ArgumentError("a batch has B ≥ 1 fields with k′ ≥ 0 perturbations each"))
         haskey(Flows.imex_schemes, scheme) ||
             throw(ArgumentError("scheme must be one of Flows.imex_schemes, " *
                                 "$(sort(collect(keys(Flows.imex_schemes))))"))
-        adjoint && scheme === :CB4R3R4 &&
-            throw(ArgumentError("Flows.jl has no adjoint of the scheme CB4R3R4"))
 
         # ---- a batch of b fields on the device, and the registers of the scheme for batches
         #      like X, in a mode of Flows.jl ----
-        template              = array{ComplexF64}(undef, 0, 0, 0)
+        template              = _array(Val(device)){ComplexF64}(undef, 0, 0, 0)
         batch(b)              = FTFields(similar(template, ComplexF64, (n + 1, 2n + 1, b)))
         registers(X, mode...) = Flows.imex_schemes[scheme](X, mode...)
 
@@ -170,6 +172,11 @@ struct KolmogorovPropagator
             P.whole,
             P.adjoint)
 end
+
+# the arrays of the batches on a device: Array on the CPU, CuArray on the GPU, a method that the
+# extension of the package for CUDA adds once CUDA is loaded
+_array(::Val{:cpu}) = Array
+_array(::Val)       = throw(ArgumentError("device=:gpu needs CUDA: `using CUDA` first"))
 
 # the propagators of several sizes, by size (B, k′)
 const Propagators = Dict{Tuple{Int, Int}, KolmogorovPropagator}

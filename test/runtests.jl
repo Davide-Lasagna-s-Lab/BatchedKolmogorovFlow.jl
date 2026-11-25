@@ -24,12 +24,12 @@ const KS  = BatchedKolmogorovFlow
 const OKF = OpenKolmogorovFlow
 
 # ---- the device ----
-const DEVICE = get(ENV, "DEVICE", "cpu")
-if DEVICE == "gpu"
+const DEVICE = Symbol(get(ENV, "DEVICE", "cpu"))
+if DEVICE === :gpu
     using CUDA
     CUDA.allowscalar(false)
 end
-const ARRAY = DEVICE == "gpu" ? CuArray : Array
+const ARRAY = DEVICE === :gpu ? CuArray : Array
 
 include(joinpath(@__DIR__, "..", "examples", "orbits.jl"))
 
@@ -126,7 +126,7 @@ relerr(a, b) = abs.(a .- b) ./ abs.(a)
 # kernels, a few hundred bytes each. Defined by @eval, so that the macro of CUDA is expanded only
 # once CUDA is loaded
 allocated(f) = (f(); @allocated f())
-DEVICE == "gpu" && @eval allocated(f) = (f(); CUDA.@allocated f())
+DEVICE === :gpu && @eval allocated(f) = (f(); CUDA.@allocated f())
 
 
 # ---------------------------------------------------------------------------- #

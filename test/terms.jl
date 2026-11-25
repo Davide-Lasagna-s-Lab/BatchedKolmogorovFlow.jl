@@ -75,7 +75,7 @@
     @test reldiff(plus(dF, -1, dV), ΔX ./ -Re^2) < 1e-14
 
     # ---- the right hand side, of a batch and of a view of one field ----
-    P  = propagators(n, m, Re, kf; sizes=[(3, 0), (1, 0)], array=ARRAY)
+    P  = propagators(n, m, Re, kf; sizes=[(3, 0), (1, 0)], device=DEVICE)
     eq = OKF.ForwardEquation(n, m, Re, kf, FFTW.ESTIMATE)
     R  = rhs!(P, similar(X), X)
     for i in 1:3

@@ -12,5 +12,12 @@ MultipleShooting = "cf5c616b-dc67-45c6-b656-591e58e93453"
 OpenKolmogorovFlow = "2cb43c6e-2c58-11e9-183a-2725e2c9802c"
 Random = "9a3f8284-a2c9-5f02-9a11-845980a1fd5c"
 
+[weakdeps]
+CUDA = "052768ef-5323-5732-b1bb-66c8b64840ba"
+
+[extensions]
+BatchedKolmogorovFlowCUDAExt = "CUDA"
+
 [compat]
+CUDA = "5, 6"
 julia = "1.10"

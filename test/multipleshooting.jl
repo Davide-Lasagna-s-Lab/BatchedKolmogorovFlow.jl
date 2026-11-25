@@ -2,7 +2,7 @@
 
 @testset "make_seeds, on the grid of the recurrence" begin
     Ωs = okf_fields(1)
-    P  = KolmogorovPropagator(n, m, Re, kf; B=1, dt=dt, array=ARRAY)
+    P  = KolmogorovPropagator(n, m, Re, kf; B=1, dt=dt, device=DEVICE)
     x  = batch(Ωs)
     T  = 5.37
 
@@ -35,7 +35,7 @@ end
 @testset "as a propagator of MultipleShooting    " begin
     Ωs = okf_fields(4)
     Λs = okf_fields(4; seed=2, laminar=false)
-    P  = propagators(n, m, Re, kf; sizes=[(4, 1), (4, 2)], dt=dt, array=ARRAY)
+    P  = propagators(n, m, Re, kf; sizes=[(4, 1), (4, 2)], dt=dt, device=DEVICE)
     z  = ShootingVector(batch(Ωs), [2.0, 0.3])
     v  = ShootingVector(batch(Λs), [0.0, -0.2])
     F  = Residual(P)

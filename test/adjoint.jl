@@ -4,7 +4,7 @@
     X = random_fields(3; seed=1)
     V = random_fields(3; seed=2)
     W = random_fields(3; seed=3)
-    P = KolmogorovPropagator(n, m, Re, kf; B=3, k′=1, dt=dt, array=ARRAY, adjoint=true)
+    P = KolmogorovPropagator(n, m, Re, kf; B=3, k′=1, dt=dt, device=DEVICE, adjoint=true)
 
     # ---- the identity of the transpose, field by field: τ a whole number of steps and not (100
     #      steps, and 124 with the last one shorter), a single step shorter than dt, and no step ----
@@ -41,7 +41,7 @@
     @test reldiff(adjoint!(P, S, plus(W, 2.5, V)), plus(Z, 2.5, adjoint!(P, S, copy(V)))) < 1e-13
 
     # ---- the workspace of adjoint! only when asked for, and shared at another Reynolds number ----
-    Q = KolmogorovPropagator(n, m, Re, kf; B=3, k′=1, dt=dt, array=ARRAY)
+    Q = KolmogorovPropagator(n, m, Re, kf; B=3, k′=1, dt=dt, device=DEVICE)
     @test Q.adjoint === nothing
     @test_throws ArgumentError adjoint!(Q, stages(Q, X, 0.05), copy(W))
     @test KolmogorovPropagator(P, 2Re).adjoint === P.adjoint
@@ -50,7 +50,7 @@ end
 @testset "adjoint!, field by field as OKF + Flows " begin
     Ωs = okf_fields(3)
     Ψs = okf_fields(3; seed=4, laminar=false)
-    P  = KolmogorovPropagator(n, m, Re, kf; B=3, dt=dt, array=ARRAY, adjoint=true)
+    P  = KolmogorovPropagator(n, m, Re, kf; B=3, dt=dt, device=DEVICE, adjoint=true)
 
     # ---- the adjoint of OKF in the discrete mode of Flows, back over the stages of the whole
     #      interval, cached by a forward run ----
@@ -69,7 +69,7 @@ end
     X = random_fields(3; seed=1)
     V = random_fields(3; seed=2)
     W = random_fields(3; seed=3)
-    P = propagators(n, m, Re, kf; sizes=[(3, 1), (1, 0), (5, 0)], dt=dt, array=ARRAY, adjoint=true)
+    P = propagators(n, m, Re, kf; sizes=[(3, 1), (1, 0), (5, 0)], dt=dt, device=DEVICE, adjoint=true)
     τ = 1.234
     Z = adjoint!(P, stages(P, X, τ), copy(W))
 
@@ -90,7 +90,7 @@ end
     # ---- the propagators at another Reynolds number share the workspaces and give the results of
     #      those made there, the transpose of their own tangent ----
     Q = propagators(P, 35.0)
-    R = propagators(n, m, 35.0, kf; sizes=[(3, 1)], dt=dt, array=ARRAY, adjoint=true)
+    R = propagators(n, m, 35.0, kf; sizes=[(3, 1)], dt=dt, device=DEVICE, adjoint=true)
     @test cpu(adjoint!(Q, stages(Q, X, τ), copy(W))) == cpu(adjoint!(R, stages(R, X, τ), copy(W)))
     a = products(tangent!(Q, copy(X), copy(V), τ), W)
     b = products(V, adjoint!(Q, stages(Q, X, τ), copy(W)))

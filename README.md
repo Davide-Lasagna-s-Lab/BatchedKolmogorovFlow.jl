@@ -41,14 +41,14 @@ down the rows and `y` across the columns, the `Field{m}` of OKF transposed.
 
 The code is generic over the array of a batch. Every operation is a broadcast
 or a transform over its first two dimensions, and acts on all the fields of
-the batch. The keywords `array` and `tasks` of the propagator say where a
+the batch. The keywords `device` and `tasks` of the propagator say where a
 batch runs.
 
 | keywords | where a batch runs |
 |---|---|
-| `array=CuArray` | On the GPU, which works on all the fields at once. cuFFT does the transforms. CUDA is loaded by the user and is not a dependency of the package. |
-| `array=Array` | On one core of the CPU. FFTW does the transforms. An operation on an array runs on one core, so that a batch, however large, uses one core. |
-| `array=Array, tasks=N` | On `N` cores of the CPU. The batch is cut into `N` chunks of fields, and `N` tasks advance one chunk each, at the same time, each as a batch of its own on its own thread. |
+| `device=:gpu` | On the GPU, on `CuArray`s, which works on all the fields at once. cuFFT does the transforms. CUDA is loaded by the user, `using CUDA`, and is not a dependency of the package: an extension of the package gives the arrays of the GPU once it is loaded. |
+| `device=:cpu` | On one core of the CPU, on `Array`s. FFTW does the transforms. An operation on an array runs on one core, so that a batch, however large, uses one core. |
+| `device=:cpu, tasks=N` | On `N` cores of the CPU. The batch is cut into `N` chunks of fields, and `N` tasks advance one chunk each, at the same time, each as a batch of its own on its own thread. |
 
 A batch of 10 fields with `tasks=4` is cut into the fields `1:2`, `3:5`, `6:7`
 and `8:10`. The fields of a batch do not act on one another, since a field
@@ -82,7 +82,7 @@ so that the products have no aliasing on the modes kept.
 ```julia
 using BatchedKolmogorovFlow
 
-P = KolmogorovPropagator(n, m, Re, kf; B, k′=0, dt=0.01, scheme=:CB3R2R3e, array=Array,
+P = KolmogorovPropagator(n, m, Re, kf; B, k′=0, dt=0.01, scheme=:CB3R2R3e, device=:cpu,
                          tasks=1, adjoint=false)
 Q = KolmogorovPropagator(P, Re₂)
 
@@ -91,7 +91,7 @@ E = propagators(D, Re₂)
 ```
 
 `scheme` is the scheme of Flows.jl, one of `Flows.imex_schemes`, `:CNRK2`,
-`:CB3R2R2`, `:CB3R2R3e`, `:CB3R2R3c` or `:CB4R3R4`. `array` and `tasks` are
+`:CB3R2R2`, `:CB3R2R3e`, `:CB3R2R3c` or `:CB4R3R4`. `device` and `tasks` are
 those of the section above.
 
 A propagator is of one size, batches of `B` fields with `k′` perturbations
@@ -148,7 +148,7 @@ and to rounding,
 
     dots(tangent!(P, copy(X), V, τ), W) == dots(V, adjoint!(P, stages(P, X, τ), W))
 
-It is the adjoint of the scheme in Flows, which has none for `CB4R3R4`, with
+It is the adjoint of the scheme in Flows, with
 the explicit term `AdjointTerm`, stepped backwards over the stages of the steps
 of `propagate!`.
 `AdjointTerm` is `TangentTerm` read backwards, each step replaced by its
