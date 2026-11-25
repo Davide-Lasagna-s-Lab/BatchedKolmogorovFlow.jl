@@ -28,7 +28,8 @@ the CPU or on the GPU, which `parent` returns, and broadcasts as that array does
 
 Its properties `X.j` and `X.k` are the wavenumbers of its rows and of its columns, a column and
 a row on the device of the coefficients, so that they broadcast against the batch:
-`im .* X.j .* X` is the derivative of the fields along x. The batches made from `X`, by
+`im .* X.j .* X` is the derivative of the fields along x. `X.w` is the weight of a row in the
+inner product of the fields, [`dots`](@ref), a column like `X.j`. The batches made from `X`, by
 `similar`, `copy` and `view`, share them.
 
 # Arguments
@@ -40,6 +41,7 @@ struct FTFields{n, A<:AbstractArray{ComplexF64, 3}, W<:AbstractMatrix{Float64}} 
     data::A # the coefficients, (n+1, 2n+1, B)
        j::W # the wavenumbers along x of the rows, a column (n+1, 1): 0, …, n
        k::W # the wavenumbers along y of the columns, a row (1, 2n+1): 0, …, n, -n, …, -1
+       w::W # the weights of the rows in the inner product, a column (n+1, 1): 1, 2, …, 2
 
     function FTFields(data::AbstractArray{ComplexF64, 3})
         # ---- input checks ----
@@ -54,16 +56,24 @@ struct FTFields{n, A<:AbstractArray{ComplexF64, 3}, W<:AbstractMatrix{Float64}} 
         j = copyto!(similar(data, Float64, (n + 1, 1)), Float64[0:n;])
         k = copyto!(similar(data, Float64, (1, 2n + 1)), Float64[0:n; -n:-1])
 
+        # ---- the weights of the rows in the inner product, likewise: the modes with j ≥ 1 stand
+        #      for their conjugates too, and count twice; the row j = 0 holds both k and -k, and
+        #      counts once ----
+        w = copyto!(similar(data, Float64, (n + 1, 1)), Float64[1; fill(2, n)])
+
         return new{n, typeof(data), typeof(j)}(data,
                                                j,
-                                               k)
+                                               k,
+                                               w)
     end
 
-    # a batch on other coefficients, with the wavenumbers of the batch X, shared and not copied
+    # a batch on other coefficients, with the wavenumbers and the weights of the batch X, shared
+    # and not copied
     FTFields(data::AbstractArray{ComplexF64, 3}, X::FTFields{n}) where {n} =
         new{n, typeof(data), typeof(X.j)}(data,
                                           X.j,
-                                          X.k)
+                                          X.k,
+                                          X.w)
 end
 
 
@@ -204,12 +214,18 @@ conjugates too.
 - `X`, `Y`: two batches of fields of the same size.
 """
 function dots(X::FTFields{n}, Y::FTFields{n}) where {n}
-    # ---- the weight of a row: the modes with j ≥ 1 stand for their conjugates too, and count
-    #      twice; the row j = 0 holds both k and -k, and counts once ----
-    weight = ifelse.(X.j .== 0, 1, 2)
+    # ---- the weighted product of every mode, as a lazy broadcast: an expression to reduce, not
+    #      an array of the size of the batch, with the weights of the rows of X ----
+    #      w_j Re(conj(Ω₁[j, k]) Ω₂[j, k])
+    terms = Broadcast.instantiate(Broadcast.broadcasted((w, x, y) -> w*real(conj(x)*y),
+                                                        X.w,
+                                                        parent(X),
+                                                        parent(Y)))
 
-    # ---- the sum over the modes of every field, the fields kept apart ----
-    return sum(weight .* real.(conj.(X) .* Y); dims=(1, 2))
+    # ---- its sum over the modes of every field, the fields kept apart, in one reduction that
+    #      evaluates the terms as it goes, on the device of the coefficients: the result,
+    #      (1, 1, B), is all it allocates ----
+    return mapreduce(identity, +, terms; dims=(1, 2), init=0.0)
 end
 
 """

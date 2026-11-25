@@ -78,6 +78,12 @@ end
     @test realdot(X, X) ≈ Re * sum(OKF.dissrate(Ω, Re) for Ω in Ωs) rtol=1e-14
     @test products(view(X, :, :, 2:2), view(Y, :, :, 2:2))[1] ≈ cpu(c)[2]
 
+    # ---- one reduction, with no array of the size of the batch in between: on many fields it
+    #      allocates a small share of one batch of Float64 ----
+    Z = random_fields(64; seed=5)
+    W = random_fields(64; seed=6)
+    @test allocated(() -> dots(Z, W)) < sizeof(parent(Z))/20
+
     # ---- symmetric, and linear in each argument ----
     @test products(X, Y) ≈ products(Y, X) rtol=1e-15
     @test products(plus(X, 2.5, Y), Y) ≈ products(X, Y) .+ 2.5 .* products(Y, Y) rtol=1e-14
