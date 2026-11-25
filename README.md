@@ -169,7 +169,7 @@ over the same `S`.
 ```julia
 using MultipleShooting
 
-z = MultiVector(X, [T, s])                     # X an FTFields, the seeds
+z = ShootingVector(X, [T, s])                     # X an FTFields, the seeds
 F = Residual(P)
 J = Jacobian(P, z)
 ```
