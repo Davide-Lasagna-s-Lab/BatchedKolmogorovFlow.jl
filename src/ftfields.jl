@@ -79,16 +79,18 @@ struct FTFields{n, A<:AbstractArray{ComplexF64, 3}, W<:AbstractMatrix{Float64}} 
        k::W # the wavenumbers along y of the columns, a row (1, 2n+1): 0, …, n, -n, …, -1
        w::W # the weights of the rows in the inner product, a column (n+1, 1): 1, 2, …, 2
 
-    # the coefficients, kept, not copied, with the wavenumbers and the weights of their rows and
-    # columns, kept as they are: those of a new batch, or those of the batch that a view, a copy
-    # or a batch like it comes from, shared, so that they are made once
-    function FTFields(data::AbstractArray{ComplexF64, 3},
-                         j::W,
-                         k::W,
-                         w::W) where {W<:AbstractMatrix{Float64}}
+    # the coefficients of fields of largest wavenumber n, kept, not copied, with the wavenumbers
+    # and the weights of their rows and columns, kept as they are: those of a new batch, or those
+    # of the batch that a view, a copy or a batch like it comes from, shared, so that they are
+    # made once. With n in the type, given, a view, a copy or a batch like a batch is of a type
+    # known from that of the batch, and costs no dispatch in a term
+    function FTFields{n}(data::AbstractArray{ComplexF64, 3},
+                            j::W,
+                            k::W,
+                            w::W) where {n, W<:AbstractMatrix{Float64}}
         # ---- input checks ----
-        n = size(data, 1) - 1
-        size(data, 2) == 2n + 1 && size(j) == (n + 1, 1) && size(k) == (1, 2n + 1) ||
+        (size(data, 1), size(data, 2)) == (n + 1, 2n + 1) &&
+            size(j) == (n + 1, 1) && size(k) == (1, 2n + 1) ||
             throw(ArgumentError("the coefficients must have size (n+1, 2n+1, B), and the " *
                                 "wavenumbers those of n"))
 
@@ -102,17 +104,13 @@ end
 # the coefficients of fields of largest wavenumber n, with the wavenumbers and the weights of
 # their rows and columns, made from n on the device of the coefficients
 function FTFields(data::AbstractArray{ComplexF64, 3}, n::Int)
-    # ---- input checks ----
-    size(data, 1) == n + 1 ||
-        throw(ArgumentError("the coefficients must have size (n+1, 2n+1, B)"))
-
     # ---- the wavenumbers and the weights, on the device of the coefficients ----
     device = _device(data)
 
-    return FTFields(data,
-                    _wavenumbers_x(n, device),
-                    _wavenumbers_y(n, device),
-                    _weights(n, device))
+    return FTFields{n}(data,
+                       _wavenumbers_x(n, device),
+                       _wavenumbers_y(n, device),
+                       _weights(n, device))
 end
 
 # a batch on the coefficients data, n from the number of their rows
@@ -177,15 +175,15 @@ Base.@propagate_inbounds Base.getindex(X::FTFields, I::Vararg{Int, 3}) = X.data[
 Base.@propagate_inbounds Base.setindex!(X::FTFields, a, I::Vararg{Int, 3}) = (X.data[I...] = a)
 
 # a batch like X and a copy of it, with its wavenumbers and weights
-Base.similar(X::FTFields) = FTFields(similar(X.data), X.j, X.k, X.w)
-Base.copy(X::FTFields)    = FTFields(copy(X.data), X.j, X.k, X.w)
+Base.similar(X::FTFields{n}) where {n} = FTFields{n}(similar(X.data), X.j, X.k, X.w)
+Base.copy(X::FTFields{n}) where {n}    = FTFields{n}(copy(X.data), X.j, X.k, X.w)
 
 # an array of another type or size on the device of X, as the fields on the grid; or, when the
 # type and the first two sizes are those of a batch, a batch of fields like those of X, as
 # MultipleShooting makes for the k directions of a subspace step packed together
 function Base.similar(X::FTFields{n}, ::Type{T}, dims::Dims) where {n, T}
     batch = T === ComplexF64 && length(dims) == 3 && dims[1:2] == (n + 1, 2n + 1)
-    batch && return FTFields(similar(X.data, T, dims), X.j, X.k, X.w)
+    batch && return FTFields{n}(similar(X.data, T, dims), X.j, X.k, X.w)
 
     return similar(X.data, T, dims)
 end
@@ -196,7 +194,7 @@ end
 Base.view(X::FTFields{n},
             ::Union{Colon, Base.Slice},
             ::Union{Colon, Base.Slice},
-           b::AbstractUnitRange) where {n} = FTFields(view(X.data, :, :, b), X.j, X.k, X.w)
+           b::AbstractUnitRange) where {n} = FTFields{n}(view(X.data, :, :, b), X.j, X.k, X.w)
 
 # the fields r of a batch, as MultipleShooting takes the states of the seeds, the first and the
 # last among them: a view, a batch of fields, so that their inner product is that of the fields

@@ -28,73 +28,66 @@ for every field of the batch `Ω`, and returns it.
 - `kf::Int`: the wavenumber of the forcing.
 """
 struct ExplicitTerm{FT<:FTFields, F<:Fields, IT, FFT}
-        U::FT  # the velocity along x, in Fourier space
-        V::FT  # the velocity along y
-        P::FT  # the transform of u v
-        Q::FT  # the transform of v² - u²
-        u::F   # the velocity along x, on the grid
-        v::F   # the velocity along y
-        p::F   # the product u v
-        q::F   # the product v² - u²
-    ifft!::IT  # from the fields to the grid
-     fft!::FFT # from the grid to the fields
+       UV::FT  # the velocity in Fourier space, along x and along y in the two halves, 2B fields
+       PQ::FT  # the transforms of the two products, u v and v² - u², in the two halves
+       uv::F   # the velocity on the grid, u and v
+       pq::F   # the two products, u v and v² - u²
+    ifft!::IT  # from the velocity to the grid, both halves in one transform
+     fft!::FFT # from the products to Fourier space, both halves in one transform
        kf::Int # the wavenumber of the forcing
 
     function ExplicitTerm(X::FTFields, m::Int, kf::Int)
-        # ---- a batch on the grid, for the type of the others ----
-        u = Fields(X, m)
+        # ---- the batches of the two components and of the two products, twice the fields of X,
+        #      in Fourier space and on the grid ----
+        UV = _twice(X)
+        uv = Fields(UV, m)
 
-        # ---- the transforms ----
-        ifft! = InverseFFT!(X, m)
-        fft!  = ForwardFFT!(X, m)
+        # ---- the transforms of such batches ----
+        ifft! = InverseFFT!(UV, m)
+        fft!  = ForwardFFT!(UV, m)
 
-        return new{typeof(X), typeof(u), typeof(ifft!), typeof(fft!)}(similar(X),
-                                                                     similar(X),
-                                                                     similar(X),
-                                                                     similar(X),
-                                                                     u,
-                                                                     similar(u),
-                                                                     similar(u),
-                                                                     similar(u),
-                                                                     ifft!,
-                                                                     fft!,
-                                                                     kf)
+        return new{typeof(UV), typeof(uv), typeof(ifft!), typeof(fft!)}(UV,
+                                                                       similar(UV),
+                                                                       uv,
+                                                                       similar(uv),
+                                                                       ifft!,
+                                                                       fft!,
+                                                                       kf)
     end
 end
 
-function (eq::ExplicitTerm)(t::Real, Ω::FTFields{n}, dΩdt::FTFields{n}) where {n}
-    U, V = eq.U, eq.V
-    P, Q = eq.P, eq.Q
-    u, v = eq.u, eq.v
-    p, q = eq.p, eq.q
-
-    # ---- in Fourier space: the velocity U = -∂ψ/∂y and V = ∂ψ/∂x, with the stream function
-    #      ψ = Δ⁻¹ω ----
-    ddy!(U, Ω)
-    invlaplacian!(U, U)
-    U .*= -1
-    ddx!(V, Ω)
-    invlaplacian!(V, V)
-
-    # ---- to the grid ----
-    eq.ifft!(u, U)
-    eq.ifft!(v, V)
+function (eq::ExplicitTerm)(t::Real, Ω::FTFields, dΩdt::FTFields)
+    # ---- the velocity, and on the grid, its two components in one transform ----
+    _velocity!(eq.UV, Ω)
+    eq.ifft!(eq.uv, eq.UV)
 
     # ---- on the grid: the two products, point by point ----
+    u, v = _halves(eq.uv)
+    p, q = _halves(eq.pq)
     p .= u .* v
     q .= v.^2 .- u.^2
 
-    # ---- back to Fourier space ----
-    eq.fft!(P, p)
-    eq.fft!(Q, q)
+    # ---- back to Fourier space, the two products in one transform ----
+    eq.fft!(eq.PQ, eq.pq)
+    P, Q = _halves(eq.PQ)
 
     # ---- in Fourier space: the advection, -(∂²/∂x² - ∂²/∂y²)(u v) - ∂²/∂x∂y (v² - u²), where
-    #      ∂²/∂x² is -j², ∂²/∂y² is -k² and ∂²/∂x∂y is -j k on every mode ----
-    dΩdt .= (P.j.^2 .- P.k.^2) .* P .+ P.j .* P.k .* Q
-
-    # ---- the forcing -kf cos(kf y): -kf/2 at the two modes j = 0, k = ±kf ----
-    view(parent(dΩdt), 1, _column(eq.kf, n), :)  .-= eq.kf/2
-    view(parent(dΩdt), 1, _column(-eq.kf, n), :) .-= eq.kf/2
+    #      ∂²/∂x² is -j², ∂²/∂y² is -k² and ∂²/∂x∂y is -j k on every mode, and the forcing
+    #      -kf cos(kf y), -kf/2 at the two modes j = 0, k = ±kf, in one broadcast ----
+    dΩdt .= (P.j.^2 .- P.k.^2) .* P .+ P.j .* P.k .* Q .-
+            (eq.kf/2) .* (iszero.(P.j) .& (abs.(P.k) .== eq.kf))
 
     return dΩdt
+end
+
+# The velocity of the fields Ω in Fourier space into the two halves of UV, U = -∂ψ/∂y and
+# V = ∂ψ/∂x with the stream function ψ = Δ⁻¹ω: i k ω/(j² + k²) and -i j ω/(j² + k²), zero at the
+# mean, one broadcast each
+function _velocity!(UV::FTFields, Ω::FTFields)
+    U, V = _halves(UV)
+
+    U .= im .* Ω.k .* Ω .* _over.(Ω.j.^2 .+ Ω.k.^2)
+    V .= .-im .* Ω.j .* Ω .* _over.(Ω.j.^2 .+ Ω.k.^2)
+
+    return UV
 end

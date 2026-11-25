@@ -27,20 +27,21 @@ product of the fields of two batches, point by point.
 struct Fields{m, A<:AbstractArray{Float64, 3}} <: AbstractArray{Float64, 3}
     data::A # the values on the grid, (2m+2, 2m+2, B)
 
-    function Fields(data::AbstractArray{Float64, 3})
+    # the values on the grid of 2m+2 points, with m in the type, given, as for FTFields
+    function Fields{m}(data::AbstractArray{Float64, 3}) where {m}
         # ---- input checks ----
-        (size(data, 1) == size(data, 2) && iseven(size(data, 1))) ||
+        (size(data, 1), size(data, 2)) == (2m + 2, 2m + 2) ||
             throw(ArgumentError("the values must have size (2m+2, 2m+2, B)"))
-
-        # ---- the size of the grid, from the number of rows ----
-        m = size(data, 1) >> 1 - 1
 
         return new{m, typeof(data)}(data)
     end
 end
 
+# the values data, m from the number of their rows
+Fields(data::AbstractArray{Float64, 3}) = Fields{size(data, 1) >> 1 - 1}(data)
+
 # as many fields as the batch X has, on the grid of 2m+2 points and on the device of X
-Fields(X::FTFields, m::Int) = Fields(similar(X, Float64, (2m + 2, 2m + 2, size(X, 3))))
+Fields(X::FTFields, m::Int) = Fields{m}(similar(X, Float64, (2m + 2, 2m + 2, size(X, 3))))
 
 
 # ---------------------------------------------------------------------------- #
@@ -56,8 +57,12 @@ Base.@propagate_inbounds Base.getindex(u::Fields, I::Vararg{Int, 3}) = u.data[I.
 Base.@propagate_inbounds Base.setindex!(u::Fields, a, I::Vararg{Int, 3}) = (u.data[I...] = a)
 
 # a batch like u and a copy of it
-Base.similar(u::Fields) = Fields(similar(u.data))
-Base.copy(u::Fields)    = Fields(copy(u.data))
+Base.similar(u::Fields{m}) where {m} = Fields{m}(similar(u.data))
+Base.copy(u::Fields{m}) where {m}    = Fields{m}(copy(u.data))
+
+# the fields b of a batch, as a batch on the same values, as for FTFields
+Base.view(u::Fields{m}, ::Colon, ::Colon, b::AbstractUnitRange) where {m} =
+    Fields{m}(view(u.data, :, :, b))
 
 # broadcasting: a batch in an expression stands for the array of its values, and an expression
 # assigned to a batch is written into that array

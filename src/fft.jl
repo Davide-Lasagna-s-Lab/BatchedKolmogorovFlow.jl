@@ -7,6 +7,24 @@
 # down the rows and k in the order 0, …, m, -m-1, …, -1 across the columns: the modes of the
 # fields are copied into it, among zeros, before an inverse transform, and read from it after a
 # forward one.
+#
+# The terms transform their batches two at a time, the two components of the velocity, the two
+# products: as one batch of 2B fields, whose two halves they are, by one execution of a plan in
+# place of two. The work is the same, in half the launches on the GPU, where they cost more than
+# the work for the batches of a search.
+
+# a batch of twice the fields of X, on its device and with its wavenumbers and weights, for two
+# batches like X in its two halves
+_twice(X::FTFields) = similar(X, ComplexF64, (size(X, 1), size(X, 2), 2size(X, 3)))
+
+# the two halves of a batch along its last dimension, views, in Fourier space or on the grid, or
+# of a part of a bundle (linearised.jl)
+function _halves(A::AbstractArray{T, N}) where {T, N}
+    B = size(A, N) ÷ 2
+    c = ntuple(_ -> Colon(), Val(N - 1))
+
+    return view(A, c..., 1:B), view(A, c..., (B + 1):2B)
+end
 
 # the modes of the fields U among the wavenumbers of the grid, the others zero
 function _pad!(padded::AbstractArray, U::FTFields{n}) where {n}

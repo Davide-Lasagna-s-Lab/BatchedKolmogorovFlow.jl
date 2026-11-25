@@ -123,16 +123,13 @@ perturbations.
 - `kf::Int`: the wavenumber of the forcing.
 """
 struct TangentTerm{FT<:FTFields, F<:Fields, IT, FFT}
-        U::FT  # the velocity along x, in Fourier space
-        V::FT  # the velocity along y
-        P::FT  # the transform of the first product
-        Q::FT  # the transform of the second product
-        u::F   # the velocity along x, on the grid
-        v::F   # the velocity along y
-        p::F   # the first product: u v for a field, u v′ + u′ v for a perturbation
-        q::F   # the second product: v² - u² for a field, 2 (v v′ - u u′) for a perturbation
-    ifft!::IT  # from the bundle to the grid
-     fft!::FFT # from the grid to the bundle
+       UV::FT  # the velocity of the bundle in Fourier space, along x and along y in the two halves
+       PQ::FT  # the transforms of the two products, in the two halves
+       uv::F   # the velocity on the grid, u and v
+       pq::F   # the two products: u v and v² - u² for a field, u v′ + u′ v and 2 (v v′ - u u′)
+               # for a perturbation
+    ifft!::IT  # from the velocity to the grid, both halves in one transform
+     fft!::FFT # from the products to Fourier space, both halves in one transform
        k′::Int # the perturbations of every field
        kf::Int # the wavenumber of the forcing
 
@@ -141,49 +138,35 @@ struct TangentTerm{FT<:FTFields, F<:Fields, IT, FFT}
         size(Z, 3) % (1 + k′) == 0 ||
             throw(ArgumentError("a bundle holds 1 + k′ fields for every field"))
 
-        # ---- a batch on the grid, for the type of the others ----
-        u = Fields(Z, m)
+        # ---- the batches of the two components and of the two products, twice the fields of
+        #      the bundle, in Fourier space and on the grid, as in ExplicitTerm ----
+        UV = _twice(Z)
+        uv = Fields(UV, m)
 
-        # ---- the transforms ----
-        ifft! = InverseFFT!(Z, m)
-        fft!  = ForwardFFT!(Z, m)
+        # ---- the transforms of such batches ----
+        ifft! = InverseFFT!(UV, m)
+        fft!  = ForwardFFT!(UV, m)
 
-        return new{typeof(similar(Z)), typeof(u), typeof(ifft!), typeof(fft!)}(similar(Z),
-                                                                              similar(Z),
-                                                                              similar(Z),
-                                                                              similar(Z),
-                                                                              u,
-                                                                              similar(u),
-                                                                              similar(u),
-                                                                              similar(u),
-                                                                              ifft!,
-                                                                              fft!,
-                                                                              k′,
-                                                                              kf)
+        return new{typeof(UV), typeof(uv), typeof(ifft!), typeof(fft!)}(UV,
+                                                                       similar(UV),
+                                                                       uv,
+                                                                       similar(uv),
+                                                                       ifft!,
+                                                                       fft!,
+                                                                       k′,
+                                                                       kf)
     end
 end
 
 function (eq::TangentTerm)(t::Real, Z::FTFields{n}, dZdt::FTFields{n}) where {n}
-    U, V = eq.U, eq.V
-    P, Q = eq.P, eq.Q
+    # ---- the velocity of the fields and of their perturbations, and on the grid, its two
+    #      components in one transform ----
+    _velocity!(eq.UV, Z)
+    eq.ifft!(eq.uv, eq.UV)
 
-    # ---- in Fourier space: the velocity of the fields and of their perturbations, U = -∂ψ/∂y
-    #      and V = ∂ψ/∂x, with the stream function ψ = Δ⁻¹ω of each ----
-    ddy!(U, Z)
-    invlaplacian!(U, U)
-    U .*= -1
-    ddx!(V, Z)
-    invlaplacian!(V, V)
-
-    # ---- to the grid ----
-    eq.ifft!(eq.u, U)
-    eq.ifft!(eq.v, V)
-
-    # ---- on the grid: the fields, and their perturbations ----
-    u, u′ = _parts(eq.u, eq.k′)
-    v, v′ = _parts(eq.v, eq.k′)
-    p, p′ = _parts(eq.p, eq.k′)
-    q, q′ = _parts(eq.q, eq.k′)
+    # ---- on the grid: the fields and their perturbations, in each half ----
+    (u, v), (u′, v′) = _halves.(_parts(eq.uv, eq.k′))
+    (p, q), (p′, q′) = _halves.(_parts(eq.pq, eq.k′))
 
     # ---- the two products of Basdevant for the fields, point by point ----
     p .= u .* v
@@ -193,9 +176,9 @@ function (eq::TangentTerm)(t::Real, Z::FTFields{n}, dZdt::FTFields{n}) where {n}
     p′ .= u .* v′ .+ u′ .* v
     q′ .= 2 .* (v .* v′ .- u .* u′)
 
-    # ---- back to Fourier space ----
-    eq.fft!(P, eq.p)
-    eq.fft!(Q, eq.q)
+    # ---- back to Fourier space, the two products in one transform ----
+    eq.fft!(eq.PQ, eq.pq)
+    P, Q = _halves(eq.PQ)
 
     # ---- in Fourier space: the advection of the fields and of their perturbations, from the
     #      derivatives of the two products, as in the explicit term of the equation ----
@@ -287,85 +270,72 @@ returns it. Field by field, `dots(Et(t, Ω, dΩdt, V, similar(V)), W)` equals
 - `m::Int`: the grid of the products has `2m+2` points along each direction, at least `3n + 1`.
 """
 struct AdjointTerm{FT<:FTFields, F<:Fields, IT, FFT}
-        U::FT  # a velocity along x in Fourier space, then the transform of u′
-        V::FT  # a velocity along y, then the transform of v′
-        P::FT  # the transpose of the advection, in the place of the transform of u v′ + u′ v
-        Q::FT  # and in the place of the transform of 2 (v v′ - u u′)
-        u::F   # the velocity of the fields along x, on the grid
-        v::F   # the velocity of the fields along y
-       u′::F   # the transpose of the products, in the place of the velocity of the
-               # perturbations along x
-       v′::F   # and in the place of the velocity along y
-        p::F   # P on the grid
-        q::F   # Q on the grid
-    ifft!::IT  # from the fields to the grid
-     fft!::FFT # from the grid to the fields
+       UV::FT  # the velocity of the fields in Fourier space, U and V in the two halves, then the
+               # transform of u′ and v′
+       PQ::FT  # the transpose of the advection, in the places of the transforms of u v′ + u′ v
+               # and 2 (v v′ - u u′)
+       uv::F   # the velocity of the fields on the grid, u and v
+      uv′::F   # the transpose of the products, in the places of the velocity of the
+               # perturbations, u′ and v′
+       pq::F   # PQ on the grid, p and q
+    ifft!::IT  # from the fields to the grid, both halves in one transform
+     fft!::FFT # from the grid to the fields, both halves in one transform
 
     function AdjointTerm(X::FTFields, m::Int)
-        # ---- a batch on the grid, for the type of the others ----
-        u = Fields(X, m)
+        # ---- the batches of two halves, twice the fields of X, in Fourier space and on the
+        #      grid, as in ExplicitTerm ----
+        UV = _twice(X)
+        uv = Fields(UV, m)
 
-        # ---- the transforms ----
-        ifft! = InverseFFT!(X, m)
-        fft!  = ForwardFFT!(X, m)
+        # ---- the transforms of such batches ----
+        ifft! = InverseFFT!(UV, m)
+        fft!  = ForwardFFT!(UV, m)
 
-        return new{typeof(X), typeof(u), typeof(ifft!), typeof(fft!)}(similar(X),
-                                                                     similar(X),
-                                                                     similar(X),
-                                                                     similar(X),
-                                                                     u,
-                                                                     similar(u),
-                                                                     similar(u),
-                                                                     similar(u),
-                                                                     similar(u),
-                                                                     similar(u),
-                                                                     ifft!,
-                                                                     fft!)
+        return new{typeof(UV), typeof(uv), typeof(ifft!), typeof(fft!)}(UV,
+                                                                       similar(UV),
+                                                                       uv,
+                                                                       similar(uv),
+                                                                       similar(uv),
+                                                                       ifft!,
+                                                                       fft!)
     end
 end
 
 function (eq::AdjointTerm)(t::Real, Ω::FTFields, Λ::FTFields, dΛdt::FTFields)
-    U, V   = eq.U, eq.V
-    P, Q   = eq.P, eq.Q
-    u, v   = eq.u, eq.v
-    u′, v′ = eq.u′, eq.v′
-    p, q   = eq.p, eq.q
-
     # ---- the velocity of the fields, in Fourier space and then on the grid, as in the tangent
     #      term ----
-    ddy!(U, Ω)
-    invlaplacian!(U, U)
-    U .*= -1
-    ddx!(V, Ω)
-    invlaplacian!(V, V)
-    eq.ifft!(u, U)
-    eq.ifft!(v, V)
+    _velocity!(eq.UV, Ω)
+    eq.ifft!(eq.uv, eq.UV)
 
     # ---- the transpose of the advection: the adjoint fields in the places of the transforms of
     #      the two products, each with the multiplier it has there, j² - k² and j k, which are
     #      real and their own transposes ----
+    P, Q = _halves(eq.PQ)
     P .= (Λ.j.^2 .- Λ.k.^2) .* Λ
     Q .= Λ.j .* Λ.k .* Λ
 
-    # ---- the transpose of the forward transforms of the products: the inverse ones ----
-    eq.ifft!(p, P)
-    eq.ifft!(q, Q)
+    # ---- the transpose of the forward transforms of the products: the inverse ones, both in
+    #      one ----
+    eq.ifft!(eq.pq, eq.PQ)
 
     # ---- the transpose of the products u v′ + u′ v and 2 (v v′ - u u′) in (u′, v′), point by point ----
+    u, v   = _halves(eq.uv)
+    u′, v′ = _halves(eq.uv′)
+    p, q   = _halves(eq.pq)
     u′ .= v .* p .- 2 .* u .* q
     v′ .= u .* p .+ 2 .* v .* q
 
-    # ---- the transpose of the inverse transforms of the velocity: the forward ones ----
-    eq.fft!(U, u′)
-    eq.fft!(V, v′)
+    # ---- the transpose of the inverse transforms of the velocity: the forward ones, both in
+    #      one ----
+    eq.fft!(eq.UV, eq.uv′)
+    U, V = _halves(eq.UV)
 
     # ---- the transpose of the velocity of a perturbation, u′ = -∂ψ′/∂y and v′ = ∂ψ′/∂x with
     #      Δψ′ = λ: Δ⁻¹(∂U/∂y - ∂V/∂x). The conjugates of i j and i k are -i j and -i k and Δ⁻¹
     #      is real, so that the transpose of -∂/∂y Δ⁻¹ is ∂/∂y Δ⁻¹ and that of ∂/∂x Δ⁻¹ is
-    #      -∂/∂x Δ⁻¹ ----
-    ddy!(U, U)
-    ddx!(V, V)
-    dΛdt .= U .- V
+    #      -∂/∂x Δ⁻¹. On every mode, i (j V - k U)/(j² + k²), zero at the mean, in one
+    #      broadcast ----
+    dΛdt .= im .* (Λ.j .* V .- Λ.k .* U) .* _over.(Λ.j.^2 .+ Λ.k.^2)
 
-    return invlaplacian!(dΛdt, dΛdt)
+    return dΛdt
 end
