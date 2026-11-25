@@ -36,8 +36,8 @@ export KolmogorovPropagator,
        dshift!,
        stages,
        adjoint!,
-       realdot,
-       realdots
+       dots,
+       realdot
 
 include("ftfields.jl")
 include("fields.jl")

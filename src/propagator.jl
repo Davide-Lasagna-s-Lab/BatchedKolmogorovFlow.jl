@@ -214,12 +214,12 @@ end
 """
     adjoint!(P::KolmogorovPropagator, S, W) -> W
 
-The transpose of [`tangent!`](@ref) in the inner product of the fields, [`realdots`](@ref), over
+The transpose of [`tangent!`](@ref) in the inner product of the fields, [`dots`](@ref), over
 the stages `S` of [`stages`](@ref): `W` becomes the transpose of the derivative of the discrete
 flow, over the interval and from the fields of `S`, applied to `W`. For any batches `V` and `W`,
 field by field and to rounding,
 
-    realdots(tangent!(P, copy(X), V, τ), W) == realdots(V, adjoint!(P, stages(P, X, τ), W))
+    dots(tangent!(P, copy(X), V, τ), W) == dots(V, adjoint!(P, stages(P, X, τ), W))
 
 The adjoint scheme runs backwards over `S`, from the last step to the first, and leaves `S` as
 it is, so that one forward pass serves every `W`: a call costs one backward pass. `W` has as many

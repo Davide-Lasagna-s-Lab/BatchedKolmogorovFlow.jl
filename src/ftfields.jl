@@ -186,7 +186,7 @@ function apply_symmetry!(X::FTFields{n}) where {n}
 end
 
 """
-    realdots(X, Y) -> c
+    dots(X, Y) -> c
 
 The inner products of the fields of the batches `X` and `Y` one by one, the mean over the domain
 of the product of the two vorticity fields,
@@ -194,13 +194,16 @@ of the product of the two vorticity fields,
     c[1, 1, b] = ⟨ω₁ ω₂⟩ = Σⱼ Σₖ conj(Ω₁[j, k]) Ω₂[j, k],   j, k = -n, …, n,
 
 as `dot` of two fields of OpenKolmogorovFlow. `c` is a real array of size `(1, 1, B)` on the
-device of `X`, from one reduction. It is the inner product of a batch of fields for
-MultipleShooting.jl, its `dots`.
+device of `X`, from one reduction. The method of `dots` of MultipleShooting.jl for a batch of
+fields, so that the Krylov method, the phase conditions, the bases of the subspace and the
+preconditioner of a search all take the inner product of the fields: the Euclidean product of
+the coefficients that are kept would count once the modes with j ≥ 1, which stand for their
+conjugates too.
 
 # Arguments
 - `X`, `Y`: two batches of fields of the same size.
 """
-function realdots(X::FTFields{n}, Y::FTFields{n}) where {n}
+function dots(X::FTFields{n}, Y::FTFields{n}) where {n}
     # ---- the weight of a row: the modes with j ≥ 1 stand for their conjugates too, and count
     #      twice; the row j = 0 holds both k and -k, and counts once ----
     weight = ifelse.(X.j .== 0, 1, 2)
@@ -212,10 +215,7 @@ end
 """
     realdot(X, Y) -> Float64
 
-The sum over the fields of the inner products [`realdots`](@ref) of the batches `X` and `Y`.
+The sum over the fields of the inner products [`dots`](@ref) of the batches `X` and `Y`.
 `realdot(X, X)` is the mean of ω² summed over the fields.
 """
-realdot(X::FTFields{n}, Y::FTFields{n}) where {n} = sum(realdots(X, Y))
-
-# the inner product of the states of two batches, for MultipleShooting.jl
-dots(X::FTFields, Y::FTFields) = realdots(X, Y)
+realdot(X::FTFields{n}, Y::FTFields{n}) where {n} = sum(dots(X, Y))

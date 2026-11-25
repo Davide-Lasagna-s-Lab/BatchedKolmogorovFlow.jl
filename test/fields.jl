@@ -70,7 +70,7 @@ end
     # ---- the inner product of OKF, field by field and summed, on views too ----
     Ψs = okf_fields(3; seed=3)
     Y  = batch(Ψs)
-    c  = realdots(X, Y)
+    c  = dots(X, Y)
     @test size(c) == (1, 1, 3)
     @test products(X, Y) ≈ [dot(Ωs[i], Ψs[i]) for i in 1:3] rtol=1e-14
     @test realdot(X, Y) ≈ sum(cpu(c))

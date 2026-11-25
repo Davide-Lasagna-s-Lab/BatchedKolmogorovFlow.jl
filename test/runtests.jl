@@ -115,7 +115,7 @@ end
 reldiff(A, B) = maximum(abs, cpu(A) .- cpu(B)) / maximum(abs, cpu(B))
 
 # the inner products of two batches, field by field, as a vector on the CPU
-products(X, Y) = vec(Array(realdots(X, Y)))
+products(X, Y) = vec(Array(dots(X, Y)))
 
 # the relative differences of two vectors of inner products, entry by entry
 relerr(a, b) = abs.(a .- b) ./ abs.(a)

@@ -11,7 +11,7 @@
 #
 # as the LinearisedExTerm of OpenKolmogorovFlow in its adjoint mode.
 #
-# The term is TangentTerm read backwards, each step replaced by its transpose in realdots and in
+# The term is TangentTerm read backwards, each step replaced by its transpose in dots and in
 # the mean over the grid: a multiplier in Fourier space by its conjugate, a product with u or v by
 # itself, and each transform by the other, since the mean over the grid of the values of a field
 # times any values is the inner product of the field with the modes of those values. It is then
@@ -22,15 +22,15 @@
     AdjointTerm(X, m)
 
 The transpose of the linearised advection of [`TangentTerm`](@ref) in the inner product of the
-fields, [`realdots`](@ref), for batches of fields like `X`, with its transforms and its storage.
+fields, [`dots`](@ref), for batches of fields like `X`, with its transforms and its storage.
 Called as `eq(t, Ω, Λ, dΛdt)`, as Flows.jl calls the linearised term of an adjoint flow on its
 cached stages, it writes into `dΛdt`
 
     u ∂λ/∂x + v ∂λ/∂y + Δ⁻¹(∂λ/∂x ∂ω/∂y - ∂λ/∂y ∂ω/∂x)
 
 for every adjoint field of the batch `Λ` about the field of the batch `Ω` in the same place, and
-returns it. Field by field, `realdots(Et(t, Ω, dΩdt, V, similar(V)), W)` equals
-`realdots(V, Ea(t, Ω, W, similar(W)))` to rounding, `Et` the tangent term and `Ea` this one.
+returns it. Field by field, `dots(Et(t, Ω, dΩdt, V, similar(V)), W)` equals
+`dots(V, Ea(t, Ω, W, similar(W)))` to rounding, `Et` the tangent term and `Ea` this one.
 
 # Arguments
 - `X::FTFields`: a batch of fields, for its size and its device.

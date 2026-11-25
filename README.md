@@ -113,10 +113,10 @@ not run at the same time.
 | `dshift!(P, G, X, i)` | the generator of the shift, `∂ω/∂x` |
 | `stages(P, X, τ)` | the stages of every step of the flow over `τ` from the fields `X`, which are left as they are, kept for `adjoint!` |
 | `adjoint!(P, S, W)` | the transpose of `tangent!` applied to `W`, back over the stages `S` |
-| `realdots(X, Y)` | the inner products of the fields one by one, the mean of `ω₁ ω₂`, a real array `(1, 1, B)` |
+| `dots(X, Y)` | the inner products of the fields one by one, the mean of `ω₁ ω₂`, a real array `(1, 1, B)`: the method of `dots` of MultipleShooting |
 | `realdot(X, Y)` | their sum over the fields |
 
-The first six are methods of the functions of MultipleShooting, and
+The first six, and `dots`, are methods of the functions of MultipleShooting, and
 `adjoint!` is a method of `LinearAlgebra.adjoint!`, exported. Every function takes views
 of a batch, `view(X, :, :, b)`. `propagate!`, `tangent!`, `forced!`,
 `stages`, `adjoint!` and `rhs!` first give their input the symmetry of fields, by
@@ -131,10 +131,10 @@ number up to the error of the scheme.
 ## The adjoint
 
 `adjoint!` is the transpose of the derivative of the discrete flow in the inner
-product of the fields, `realdots`. For any batches `V` and `W`, field by field
+product of the fields, `dots`. For any batches `V` and `W`, field by field
 and to rounding,
 
-    realdots(tangent!(P, copy(X), V, τ), W) == realdots(V, adjoint!(P, stages(P, X, τ), W))
+    dots(tangent!(P, copy(X), V, τ), W) == dots(V, adjoint!(P, stages(P, X, τ), W))
 
 It is the adjoint of the scheme in Flows, which has none for `CB4R3R4`, with
 the explicit term `AdjointTerm`, stepped backwards over the stages of the steps
@@ -174,7 +174,7 @@ F = Residual(P)
 J = Jacobian(P, z)
 ```
 
-The inner product of the fields, `realdots`, is the `dots` of MultipleShooting
+The inner product of the fields is the method of `dots` of MultipleShooting
 for a batch of fields, so that the Krylov method, the phase conditions and the
 preconditioner all use it. For a search or a
 continuation with the Reynolds number free, the family of propagators is
