@@ -97,7 +97,7 @@ plus(X, a, Y) = FTFields(X .+ a .* Y)
 
 # the k′ blocks of as many fields as X of the batch V, one after the other, as a vector of
 # batches that share them: the directions that tangent! takes
-directions(X, V) = [view(V, :, :, (a - 1)*size(X, 3) .+ (1:size(X, 3))) for a in 1:(size(V, 3) ÷ size(X, 3))]
+directions(X, V) = [view(V, :, :, (k₁ - 1)*size(X, 3) .+ (1:size(X, 3))) for k₁ in 1:(size(V, 3) ÷ size(X, 3))]
 
 # the bundle of the fields X with their perturbations V, k′ blocks of as many, and the fields and
 # the perturbations of a bundle Z of B fields, as two batches
@@ -120,7 +120,7 @@ products(X, Y) = vec(Array(dots(X, Y)))
 # the relative differences of two vectors of inner products, entry by entry
 relerr(a, b) = abs.(a .- b) ./ abs.(a)
 
-# the memory that a second call of f allocates, the first having compiled it and built its storage:
+# the memory that a second call of f allocates, the first having compiled it:
 # on the CPU, as @allocated counts it; on the GPU, the memory of the device, as CUDA.@allocated
 # counts it, since the CPU there holds only the wrappers of the arrays and the launches of the
 # kernels, a few hundred bytes each. Defined by @eval, so that the macro of CUDA is expanded only

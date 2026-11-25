@@ -1,5 +1,5 @@
 # The propagator: its constructor, propagate!, tangent!, forced!, rhs!, shift! and dshift!, the
-# properties of the flow, and its storage.
+# properties of the flow, and its propagators of fixed sizes.
 
 # the rotation by π, ω(x, y) → ω(-x, -y): the coefficients conjugated
 rotate(X) = FTFields(conj.(X))
@@ -14,27 +14,54 @@ function shiftreflect(X)
 end
 
 @testset "the propagator                         " begin
-    P = KolmogorovPropagator(n, m, Re, kf; dt=dt, array=ARRAY)
+    P = KolmogorovPropagator(n, m, Re, kf; B=3, k′=2, dt=dt, array=ARRAY)
 
-    # ---- what it holds, with no storage until the first call ----
-    @test (P.n, P.m, P.Re, P.kf, P.dt) == (n, m, Re, kf, dt)
-    @test P.template isa ARRAY{ComplexF64, 3}
-    @test all(isempty, P.cache)
-    @test length(P.cache) == length(P.tangents) == 1
-    @test length(KolmogorovPropagator(n, m, Re, kf; tasks=3).cache) == 3
-    @test KolmogorovPropagator(n, m, 40, kf).Re === 40.0
-    @test KolmogorovPropagator(n, m, Re, kf).dt == 0.01
+    # ---- what it holds: its size, and its workspace on the device ----
+    @test (P.n, P.m, P.Re, P.kf, P.dt, P.B, P.k′) == (n, m, Re, kf, dt, 3, 2)
+    @test parent(P.whole.X) isa ARRAY{ComplexF64, 3}
+    @test size(P.tangent[1].Z, 3) == 9
+    @test P.adjoint === nothing
+    @test isempty(KolmogorovPropagator(n, m, Re, kf; B=1).tangent)
+    @test length(KolmogorovPropagator(n, m, Re, kf; B=5, k′=1, tasks=3).chunks) == 3
+    @test KolmogorovPropagator(n, m, 40, kf; B=1).Re === 40.0
+    @test KolmogorovPropagator(n, m, Re, kf; B=1).dt == 0.01
 
-    # ---- checks: a grid that aliases the products, and a forcing outside the modes ----
-    @test_throws ArgumentError KolmogorovPropagator(8, 11, Re, kf)
-    @test KolmogorovPropagator(8, 12, Re, kf) isa KolmogorovPropagator
-    @test_throws ArgumentError KolmogorovPropagator(n, m, Re, 9)
-    @test_throws ArgumentError KolmogorovPropagator(n, m, Re, 0)
+    # ---- another size is an error ----
+    @test_throws ArgumentError propagate!(P, random_fields(2), 0.1)
+    @test_throws ArgumentError tangent!(P, random_fields(3), random_fields(3), 0.1)
+    @test_throws ArgumentError tangent!(P, random_fields(3), [random_fields(3) for k₁ in 1:3], 0.1)
+
+    # ---- the propagators of several sizes, by size: the equation alone goes to the one with the
+    #      fewest perturbations, and a size that is not there is an error ----
+    D = propagators(n, m, Re, kf; sizes=[(3, 1), (3, 2), (1, 0)], dt=dt, array=ARRAY)
+    @test sort(collect(keys(D))) == [(1, 0), (3, 1), (3, 2)]
+    @test (D[3, 2].B, D[3, 2].k′, D[3, 2].dt) == (3, 2, dt)
+    @test KS._fields(D, 3) === D[3, 1]
+    @test KS._fields(D, 1) === D[1, 0]
+    @test_throws ArgumentError propagate!(D, random_fields(2), 0.1)
+    @test_throws ArgumentError tangent!(D, random_fields(1), random_fields(1), 0.1)
+    @test_throws ArgumentError tangent!(D, random_fields(3), [random_fields(3) for k₁ in 1:3], 0.1)
+    @test_throws ArgumentError propagators(n, m, Re, kf; sizes=[])
+
+    # ---- the propagators at another Reynolds number, with the same workspaces ----
+    E = propagators(D, 35.0)
+    @test Set(keys(E)) == Set(keys(D))
+    @test all(E[s].Re == 35.0 && E[s].whole === D[s].whole for s in keys(D))
+
+    # ---- checks: no size, a size of no fields, a grid that aliases the products, and a forcing
+    #      outside the modes ----
+    @test_throws UndefKeywordError KolmogorovPropagator(n, m, Re, kf)
+    @test_throws ArgumentError KolmogorovPropagator(n, m, Re, kf; B=0)
+    @test_throws ArgumentError KolmogorovPropagator(n, m, Re, kf; B=1, k′=-1)
+    @test_throws ArgumentError KolmogorovPropagator(8, 11, Re, kf; B=1)
+    @test KolmogorovPropagator(8, 12, Re, kf; B=1) isa KolmogorovPropagator
+    @test_throws ArgumentError KolmogorovPropagator(n, m, Re, 9; B=1)
+    @test_throws ArgumentError KolmogorovPropagator(n, m, Re, 0; B=1)
 end
 
 @testset "propagate!, field by field as OKF + Flows" begin
     Ωs = okf_fields(4)
-    P  = KolmogorovPropagator(n, m, Re, kf; dt=dt, array=ARRAY)
+    P  = propagators(n, m, Re, kf; sizes=[(4, 0), (2, 0), (5, 0), (1, 0)], dt=dt, array=ARRAY)
 
     # ---- a span that is a whole number of steps, and one that is not, as the segments of a search ----
     for τ in (1.0, 2.345)
@@ -46,7 +73,8 @@ end
         end
     end
 
-    # ---- any batch size: two of the fields alone, one field repeated, and one alone ----
+    # ---- every batch size it was made for: two of the fields alone, one field repeated, and one
+    #      alone ----
     X  = propagate!(P, batch(Ωs), 2.345)
     Y  = propagate!(P, batch(Ωs[1:2]), 2.345)
     Z  = propagate!(P, batch([Ωs[3] for i in 1:5]), 2.345)
@@ -54,7 +82,6 @@ end
     @test reldiff(Y, cpu(X)[:, :, 1:2]) < 1e-13
     @test all(reldiff(cpu(Z)[:, :, j], cpu(X)[:, :, 3]) < 1e-13 for j in 1:5)
     @test reldiff(X₁, cpu(X)[:, :, 4:4]) < 1e-13
-    @test sort(collect(keys(P.cache[1]))) == [1, 2, 4, 5]
 
     # ---- a view of a batch ----
     Y = batch(Ωs)
@@ -70,7 +97,7 @@ end
 @testset "propagate! as a flow                   " begin
     Ωs = okf_fields(3)
     X  = batch(Ωs)
-    P  = KolmogorovPropagator(n, m, Re, kf; dt=dt, array=ARRAY)
+    P  = propagators(n, m, Re, kf; sizes=[(3, 0), (1, 0)], dt=dt, array=ARRAY)
 
     # ---- a span of zero leaves the fields, and two spans one after the other make their sum ----
     @test cpu(propagate!(P, copy(X), 0)) == cpu(X)
@@ -107,7 +134,7 @@ end
     Λs = okf_fields(3; seed=2, laminar=false)
     X  = batch(Ωs)
     V  = batch(Λs)
-    P  = KolmogorovPropagator(n, m, Re, kf; dt=dt, array=ARRAY)
+    P  = KolmogorovPropagator(n, m, Re, kf; B=3, k′=1, dt=dt, array=ARRAY)
     τ  = 1.234
     s  = 0.731
 
@@ -131,7 +158,7 @@ end
 @testset "tangent!, field by field as OKF + Flows " begin
     Ωs = okf_fields(3)
     Λs = okf_fields(3; seed=2, laminar=false)
-    P  = KolmogorovPropagator(n, m, Re, kf; dt=dt, array=ARRAY)
+    P  = propagators(n, m, Re, kf; sizes=[(3, 1), (1, 1)], dt=dt, array=ARRAY)
 
     # ---- the coupled tangent equation of OKF ----
     τ = 1.234
@@ -190,7 +217,7 @@ end
     τ  = 0.734
 
     for name in (:CNRK2, :CB3R2R2, :CB3R2R3c, :CB4R3R4)
-        P = KolmogorovPropagator(n, m, Re, kf; dt=dt, scheme=name, array=ARRAY)
+        P = KolmogorovPropagator(n, m, Re, kf; B=3, k′=1, dt=dt, scheme=name, array=ARRAY)
 
         # ---- the same scheme of Flows on the fields of OKF, alone and with the tangent ----
         scheme = getfield(Flows, name)
@@ -217,21 +244,24 @@ end
     V = random_fields(3; seed=5)
     W = random_fields(3; seed=6)
     for name in (:CNRK2, :CB3R2R2, :CB3R2R3c)
-        P  = KolmogorovPropagator(n, m, Re, kf; dt=dt, scheme=name, array=ARRAY)
+        P  = KolmogorovPropagator(n, m, Re, kf; B=3, k′=1, dt=dt, scheme=name, array=ARRAY,
+                                  adjoint=true)
         ψV = tangent!(P, copy(X), copy(V), τ)
         ψW = adjoint!(P, stages(P, X, τ), copy(W))
         @test all(relerr(products(ψV, W), products(V, ψW)) .< 1e-10)
     end
 
-    # ---- a name that is not a scheme, and the adjoint of the scheme that has none ----
-    @test_throws ArgumentError KolmogorovPropagator(n, m, Re, kf; scheme=:RK4)
-    P = KolmogorovPropagator(n, m, Re, kf; dt=dt, scheme=:CB4R3R4, array=ARRAY)
-    @test_throws ArgumentError adjoint!(P, stages(P, X, τ), copy(W))
+    # ---- a name that is not a scheme of Flows, nor one with an implicit part, and the adjoint of
+    #      the scheme that has none ----
+    @test_throws ArgumentError KolmogorovPropagator(n, m, Re, kf; B=3, k′=1, scheme=:CB9)
+    @test_throws ArgumentError KolmogorovPropagator(n, m, Re, kf; B=3, k′=1, scheme=:RK4)
+    @test_throws ArgumentError KolmogorovPropagator(n, m, Re, kf; B=3, k′=1, scheme=:CB4R3R4,
+                                                    adjoint=true)
 end
 
 @testset "tangent!, batches about the same fields" begin
     Ωs = okf_fields(3)
-    P  = KolmogorovPropagator(n, m, Re, kf; dt=dt, array=ARRAY)
+    P  = propagators(n, m, Re, kf; sizes=[(3, 1), (3, 2)], dt=dt, array=ARRAY)
     τ  = 1.234
 
     # ---- two batches of three perturbations, each about the three fields ----
@@ -241,18 +271,14 @@ end
     tangent!(P, Y, directions(Y, W), τ)
 
     # ---- batch by batch as tangent! on the batch alone ----
-    for a in 1:2
-        block = (3a - 2):3a
-        Vₐ    = dev(FTFields(cpu(V)[:, :, block]))
-        @test reldiff(cpu(W)[:, :, block], tangent!(P, batch(Ωs), Vₐ, τ)) < 1e-13
+    for k₁ in 1:2
+        block = (3k₁ - 2):3k₁
+        V₁    = dev(FTFields(cpu(V)[:, :, block]))
+        @test reldiff(cpu(W)[:, :, block], tangent!(P, batch(Ωs), V₁, τ)) < 1e-13
     end
 
     # ---- the fields advanced once, as propagate! takes them ----
     @test cpu(Y) == cpu(propagate!(P, batch(Ωs), τ))
-
-    # ---- one storage for the two sizes, built once and looked up after ----
-    @test haskey(P.tangents[1], (3, 6))
-    @test KS._tangent_storage(P, 3, 6) === KS._tangent_storage(P, 3, 6)
 
     # ---- a batch of perturbations with another number of fields is refused ----
     @test_throws ArgumentError tangent!(P, batch(Ωs), random_fields(4), τ)
@@ -262,15 +288,14 @@ end
 @testset "another Reynolds number, and forced!   " begin
     Ωs = okf_fields(3)
     Λs = okf_fields(3; seed=2, laminar=false)
-    P  = KolmogorovPropagator(n, m, Re, kf; dt=dt, array=ARRAY)
+    P  = KolmogorovPropagator(n, m, Re, kf; B=3, k′=1, dt=dt, array=ARRAY)
     X  = propagate!(P, batch(Ωs), 1.234)
 
-    # ---- the propagator at another Reynolds number shares the storage, gives the results of one
-    #      built there, and leaves the first as it was ----
+    # ---- the propagator at another Reynolds number shares the workspace, gives the results of one
+    #      made there, and leaves the first as it was ----
     Q = KolmogorovPropagator(P, 35.0)
-    R = KolmogorovPropagator(n, m, 35.0, kf; dt=dt, array=ARRAY)
-    @test typeof(Q) === typeof(P)
-    @test Q.cache === P.cache
+    R = KolmogorovPropagator(n, m, 35.0, kf; B=3, k′=1, dt=dt, array=ARRAY)
+    @test Q.whole === P.whole && Q.tangent === P.tangent
     @test Q.Re == 35.0 && P.Re == Re
     @test cpu(propagate!(Q, batch(Ωs), 1.234)) == cpu(propagate!(R, batch(Ωs), 1.234))
     @test cpu(tangent!(Q, batch(Ωs), batch(Λs), 1.234)) == cpu(tangent!(R, batch(Ωs), batch(Λs), 1.234))
@@ -279,14 +304,14 @@ end
     @test cpu(propagate!(P, batch(Ωs), 1.234)) == cpu(X)
     @test reldiff(propagate!(Q, batch(Ωs), 1.234), X) > 1e-3
 
-    # ---- it costs no plan and no array ----
+    # ---- it costs no workspace ----
     propagate!(Q, batch(Ωs), 2dt)
     @test (@allocated KolmogorovPropagator(P, 36.0)) < 256
 
     # ---- forced! from zero against the centred difference of propagate! in the Reynolds number,
     #      up to the error of the scheme, which falls with the step ----
     errors = map((0.01, 0.005)) do h
-        A  = KolmogorovPropagator(n, m, Re, kf; dt=h, array=ARRAY)
+        A  = KolmogorovPropagator(n, m, Re, kf; B=3, k′=1, dt=h, array=ARRAY)
         V  = forced!(A, batch(Ωs), fill!(similar(X), 0), 1.234)
         ε  = 1e-4
         Xp = propagate!(KolmogorovPropagator(A, Re + ε), batch(Ωs), 1.234)
@@ -310,7 +335,7 @@ end
 @testset "shift and its generator                " begin
     Ωs = okf_fields(3)
     X  = batch(Ωs)
-    P  = KolmogorovPropagator(n, m, Re, kf; array=ARRAY)
+    P  = KolmogorovPropagator(n, m, Re, kf; B=3, array=ARRAY)
 
     # ---- the shift along x is OKF's xshift!, for a number and for the vector of the shifts ----
     s  = 0.731
@@ -339,23 +364,20 @@ end
     @test all(abs.(products(D, X)) .< 1e-14 .* products(X, X))
 end
 
-@testset "storage, built once and looked up      " begin
+@testset "workspaces, made with the propagator   " begin
     X   = random_fields(256)
     V   = random_fields(256; seed=8)
     W   = random_fields(256; seed=9)
     F   = similar(X)
     one = sizeof(parent(X))
-    P   = KolmogorovPropagator(n, m, Re, kf; dt=dt, array=ARRAY)
+    P   = propagators(n, m, Re, kf; sizes=[(256, 1)], dt=dt, array=ARRAY, adjoint=true)
 
-    # ---- built at the first call with 256 fields, and only looked up after ----
-    @test all(isempty, P.cache)
-    rhs!(P, F, X)
-    @test collect(keys(P.cache[1])) == [256]
-    @test KS._storage(P, 256) === KS._storage(P, 256)
-    @test allocated(() -> KS._storage(P, 256)) == 0
+    # ---- the propagator of the size is only looked up ----
+    @test allocated(() -> KS._sized(P, 256, 1)) == 0
+    @test allocated(() -> KS._fields(P, 256)) == 0
 
-    # ---- so that a later call allocates much less than one batch, over three steps: a few kB for
-    #      each call and each step, whatever the size of the batch ----
+    # ---- so that a call allocates much less than one batch, over three steps: a few kB for each
+    #      call and each step, whatever the size of the batch ----
     @test allocated(() -> rhs!(P, F, X)) < one/10
     @test allocated(() -> propagate!(P, X, 3dt)) < one/10
     @test allocated(() -> tangent!(P, X, V, 3dt)) < one/10
@@ -367,21 +389,18 @@ end
     adjoint!(P, S, W)
     @test allocated(() -> stages(P, X, 3dt)) < 4*3*allocated(() -> copy(X)) + one/10
     @test allocated(() -> adjoint!(P, S, W)) < one/10
-
-    # ---- one storage for each batch size, shared at another Reynolds number ----
-    X₂ = view(X, :, :, 1:2)
-    rhs!(KolmogorovPropagator(P, 35.0), similar(X₂), X₂)
-    @test sort(collect(keys(P.cache[1]))) == [2, 256]
 end
 
 # several tasks advance a batch on the CPU, a chunk of its fields each: the results are those of one task
 DEVICE == "cpu" && @testset "a batch cut among tasks                " begin
     Ωs = okf_fields(5)
     τ  = 0.734
-    P₁ = KolmogorovPropagator(n, m, Re, kf; dt=dt)
+    P₁ = propagators(n, m, Re, kf; sizes=[(B, k′) for B in (1, 2, 3, 5) for k′ in (1, 2)], dt=dt,
+                     adjoint=true)
 
     for tasks in (2, 3)
-        P = KolmogorovPropagator(n, m, Re, kf; dt=dt, tasks=tasks)
+        P = propagators(n, m, Re, kf; sizes=[(B, k′) for B in (5, tasks, 1) for k′ in (1, 2)], dt=dt,
+                        tasks=tasks, adjoint=true)
 
         # ---- batches of more fields than tasks, of as many, and of fewer ----
         for B in (5, tasks, 1)
@@ -404,9 +423,8 @@ DEVICE == "cpu" && @testset "a batch cut among tasks                " begin
             @test reldiff(Y, propagate!(P₁, copy(X), τ)) < 1e-13
         end
 
-        # ---- every task keeps the storage of its chunk: of 5 fields, 2 and 3, or 1, 2 and 2 ----
-        @test [sort(collect(keys(C))) for C in P.cache] ==
-              (tasks == 2 ? [[1, 2], [1, 3]] : [[1], [1, 2], [1, 2]])
+        # ---- every task has its chunk: of 5 fields, 2 and 3, or 1, 2 and 2 ----
+        @test P[5, 1].chunks == (tasks == 2 ? [1:2, 3:5] : [1:1, 2:3, 4:5])
 
         # ---- the other methods run on one task, as those of one task ----
         X = batch(Ωs)

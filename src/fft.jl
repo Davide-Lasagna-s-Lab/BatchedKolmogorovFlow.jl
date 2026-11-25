@@ -41,7 +41,7 @@ end
     InverseFFT!(X, m)
 
 The transform of batches of fields like `X` to the grid of `2m+2` points along each direction,
-with its plan and its storage: `ifft!(u, U)` writes the values of the fields `U` on the grid into
+with its plan and its arrays: `ifft!(u, U)` writes the values of the fields `U` on the grid into
 the batch `u`, a `Fields{m}`, and returns it.
 
 # Arguments
@@ -53,7 +53,7 @@ struct InverseFFT!{C, P}
       plan::P # the complex-to-real transform over the first two dimensions, not normalised
 
     function InverseFFT!(X::FTFields, m::Int)
-        # ---- the storage of the coefficients of the grid, on the device of X ----
+        # ---- the array of the coefficients of the grid, on the device of X ----
         padded = similar(X, ComplexF64, (m + 2, 2m + 2, size(X, 3)))
 
         # ---- the transform over x and y, all the fields of the batch in one call ----
@@ -78,7 +78,7 @@ end
     ForwardFFT!(X, m)
 
 The transform from the grid of `2m+2` points along each direction to batches of fields like `X`,
-with its plan and its storage: `fft!(U, u)` writes into the batch `U` the modes of the fields `u`
+with its plan and its arrays: `fft!(U, u)` writes into the batch `U` the modes of the fields `u`
 on the grid, a `Fields{m}`, with the symmetry of fields, and returns `U`. The modes that `U` does
 not have are dropped.
 
@@ -91,7 +91,7 @@ struct ForwardFFT!{C, P}
       plan::P # the real-to-complex transform over the first two dimensions, not normalised
 
     function ForwardFFT!(X::FTFields, m::Int)
-        # ---- the storage of the coefficients of the grid, on the device of X ----
+        # ---- the array of the coefficients of the grid, on the device of X ----
         padded = similar(X, ComplexF64, (m + 2, 2m + 2, size(X, 3)))
 
         # ---- the transform over x and y, planned on a batch on the grid ----

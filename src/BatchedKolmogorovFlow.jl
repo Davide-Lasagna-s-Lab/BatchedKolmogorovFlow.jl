@@ -26,6 +26,7 @@ import OpenKolmogorovFlow
 import MultipleShooting: propagate!, tangent!, forced!, rhs!, shift!, dshift!, dots
 
 export KolmogorovPropagator,
+       propagators,
        FTFields,
        Fields,
        propagate!,

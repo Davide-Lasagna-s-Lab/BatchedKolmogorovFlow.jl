@@ -48,9 +48,10 @@ G(copy(Ω), (0, 0.1))
 t_okf = @elapsed G(copy(Ω), (0, TAU))
 @printf "OKF on the CPU, one field over τ = %g: %.3f s\n" TAU t_okf
 
-# ---- batches ----
-P = KolmogorovPropagator(n, m, Re, kf; dt=0.01, array=ARRAY)
+# ---- batches, a propagator of each size, the workspaces of the size before freed first ----
 for B in BS
+    GC.gc()
+    P = KolmogorovPropagator(n, m, Re, kf; B=B, k′=1, dt=0.01, array=ARRAY)
     X = FTFields(ARRAY(repeat(parent(FTFields([Ω])), 1, 1, B)))
     V = FTFields(ARRAY(repeat(parent(FTFields([Ω])), 1, 1, B)))
 
@@ -63,9 +64,4 @@ for B in BS
     tangent!(P, copy(X), copy(V), 0.1); wait!()
     t = @elapsed (tangent!(P, X, V, TAU); wait!())
     @printf "%s tangent!   of %5d pairs  over τ = %g: %9.3f s, %.4f s per pair,  %6.3f × OKF\n" DEVICE B TAU t t/B t/(B*t_okf)
-
-    # free the work arrays of this size before the next one
-    foreach(empty!, P.cache)
-    foreach(empty!, P.tangents)
-    GC.gc()
 end

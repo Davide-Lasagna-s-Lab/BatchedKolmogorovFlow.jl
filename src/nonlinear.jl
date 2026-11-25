@@ -15,7 +15,7 @@
     ExplicitTerm(X, m, kf)
 
 The advection and the forcing of the vorticity equation, for batches of fields like `X`, with
-its transforms and its storage. Called as `eq(t, Ω, dΩdt)`, as Flows.jl calls an explicit term,
+its transforms and its arrays. Called as `eq(t, Ω, dΩdt)`, as Flows.jl calls an explicit term,
 it writes into `dΩdt`
 
     -(u ∂ω/∂x + v ∂ω/∂y) - kf cos(kf y)

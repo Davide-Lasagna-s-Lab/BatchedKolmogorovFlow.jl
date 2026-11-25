@@ -103,7 +103,7 @@ end
     TangentTerm(Z, k′, m, kf)
 
 The explicit term of the vorticity equation and of its tangent equation, for bundles like `Z`, in
-which every field is followed by its `k′` perturbations, with its transforms and its storage.
+which every field is followed by its `k′` perturbations, with its transforms and its arrays.
 Called as `eq(t, Z, dZdt)`, as Flows.jl calls an explicit term, it writes into `dZdt`, in the
 place of every field,
 
@@ -272,7 +272,7 @@ end
     AdjointTerm(X, m)
 
 The transpose of the linearised advection of [`TangentTerm`](@ref) in the inner product of the
-fields, [`dots`](@ref), for batches of fields like `X`, with its transforms and its storage.
+fields, [`dots`](@ref), for batches of fields like `X`, with its transforms and its arrays.
 Called as `eq(t, Ω, Λ, dΛdt)`, as Flows.jl calls the linearised term of an adjoint flow on its
 cached stages, it writes into `dΛdt`
 

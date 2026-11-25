@@ -64,14 +64,14 @@ function read_orbit(path::String, n::Int)
     end
 end
 
-# the batch X on the device of the batches of the propagator P
-on_device(P, X::FTFields) = FTFields(copyto!(similar(P.template, ComplexF64, size(X)), parent(X)))
+# the batch X on the device of the batches of the propagator P, that of its workspace
+on_device(P, X::FTFields) = FTFields(copyto!(similar(parent(P.whole.X), ComplexF64, size(X)), parent(X)))
 
 """
     make_seeds(P, orbit, segment) -> X
 
 The seeds of about `T/segment` segments of equal length, a batch on the device
-of the propagator `P`. From seeds, `M` a multiple of the `N₀` seeds of the file, each advanced
+of the propagator `P`, a `KolmogorovPropagator` of the `N₀` fields of the file. From seeds, `M` a multiple of the `N₀` seeds of the file, each advanced
 in batch to fill its own segment; from an orbit of the campaigns, `M` the divisor
 of its `Ns` instants closest to `T/segment`, and the instants themselves.
 """

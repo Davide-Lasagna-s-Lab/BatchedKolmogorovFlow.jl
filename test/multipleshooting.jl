@@ -2,7 +2,7 @@
 
 @testset "make_seeds, on the grid of the recurrence" begin
     Ωs = okf_fields(1)
-    P  = KolmogorovPropagator(n, m, Re, kf; dt=dt, array=ARRAY)
+    P  = KolmogorovPropagator(n, m, Re, kf; B=1, dt=dt, array=ARRAY)
     x  = batch(Ωs)
     T  = 5.37
 
@@ -35,7 +35,7 @@ end
 @testset "as a propagator of MultipleShooting    " begin
     Ωs = okf_fields(4)
     Λs = okf_fields(4; seed=2, laminar=false)
-    P  = KolmogorovPropagator(n, m, Re, kf; dt=dt, array=ARRAY)
+    P  = propagators(n, m, Re, kf; sizes=[(4, 1), (4, 2)], dt=dt, array=ARRAY)
     z  = ShootingVector(batch(Ωs), [2.0, 0.3])
     v  = ShootingVector(batch(Λs), [0.0, -0.2])
     F  = Residual(P)
@@ -51,16 +51,18 @@ end
     w = ShootingVector(fill!(similar(z.X), 0), [1.0, 0.0])
     @test reldiff((J*w).X, difference(w, 1e-6).X) < 1e-4
 
-    # ---- the phase conditions, in time and in space, in the inner product of the fields ----
+    # ---- the phase conditions, in time and in space, in the inner product of the fields, at the
+    #      first seed ----
     Jv = J*v
+    f₁ = view(rhs!(P, similar(z.X), z.X), :, :, 1:1)
     u₁ = view(z.X, :, :, 1:1)
     v₁ = view(v.X, :, :, 1:1)
-    @test MultipleShooting.period(Jv) ≈ realdot(rhs!(P, similar(u₁), u₁), v₁)
+    @test MultipleShooting.period(Jv) ≈ realdot(f₁, v₁)
     @test MultipleShooting.shift(Jv, 1) ≈ realdot(dshift!(P, similar(u₁), u₁, 1), v₁)
 
     # ---- the column of the Reynolds number, from forced!, against the centred difference of the
     #      residual at the propagators of the family ----
-    family(R) = KolmogorovPropagator(P, R)
+    family(R) = propagators(P, R)
     c = MultipleShooting._forced(P, z)
     d = (Residual(family(Re + 1e-4))(similar(z), z) .- Residual(family(Re - 1e-4))(similar(z), z)) ./ 2e-4
     @test reldiff(c.X, d.X) < 1e-4
@@ -69,7 +71,7 @@ end
     Random.seed!(1)
     S = Subspace(P, z; k′=2)
     iterate!(S)
-    @test all(all(products(S.V[a], S.V[a]) .≈ 1) for a in 1:2)
+    @test all(all(products(S.V[k₁], S.V[k₁]) .≈ 1) for k₁ in 1:2)
     @test maximum(abs, products(S.V[1], S.V[2])) < 1e-12
-    @test all(reldiff(KS.apply_symmetry!(copy(S.V[a])), S.V[a]) < 1e-14 for a in 1:2)
+    @test all(reldiff(KS.apply_symmetry!(copy(S.V[k₁])), S.V[k₁]) < 1e-14 for k₁ in 1:2)
 end

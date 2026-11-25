@@ -55,7 +55,7 @@ and `8:10`. The fields of a batch do not act on one another, since a field
 with its perturbations is one segment of an orbit. The chunks are then
 separate integrations, and the result is that of one task, to rounding. The
 tasks run at the same time and cannot share arrays or plans, so that each has
-its own storage. `propagate!`, `tangent!` and `forced!` use the
+its own workspace. `propagate!`, `tangent!` and `forced!` use the
 tasks. The other functions run on one. Start Julia with at least `N` threads,
 `julia -t N`.
 
@@ -70,7 +70,7 @@ tasks. The other functions run on one. Start Julia with at least `N` threads,
 | `implicit.jl` | `ImplicitTerm`, the viscous term |
 | `nonlinear.jl` | `ExplicitTerm`, advection and forcing |
 | `linearised.jl` | `TangentTerm`, the linearised advection, `ForcedTangentTerm`, and `AdjointTerm`, its transpose |
-| `propagator.jl` | `KolmogorovPropagator`, the methods of MultipleShooting and `adjoint!`, then what serves them: the tasks, the storage |
+| `propagator.jl` | `KolmogorovPropagator` and `propagators`, the methods of MultipleShooting and `adjoint!`, then what serves them: the tasks, the advance of the fields with their perturbations |
 
 The advection is written in the form of Basdevant (1983),
 `(∂²/∂x² - ∂²/∂y²)(u v) + ∂²/∂x∂y (v² - u²)`, which needs the velocity alone on
@@ -82,25 +82,38 @@ so that the products have no aliasing on the modes kept.
 ```julia
 using BatchedKolmogorovFlow
 
-P = KolmogorovPropagator(n, m, Re, kf; dt=0.01, scheme=:CB3R2R3e, array=Array, tasks=1)
+P = KolmogorovPropagator(n, m, Re, kf; B, k′=0, dt=0.01, scheme=:CB3R2R3e, array=Array,
+                         tasks=1, adjoint=false)
 Q = KolmogorovPropagator(P, Re₂)
+
+D = propagators(n, m, Re, kf; sizes=[(B, 1), (B, k′)], dt=0.01, ...)
+E = propagators(D, Re₂)
 ```
 
-`scheme` is the scheme of Flows.jl, `:CNRK2`, `:CB3R2R2`, `:CB3R2R3e`,
-`:CB3R2R3c` or `:CB4R3R4`. `array` and `tasks` are those of the section above.
+`scheme` is the scheme of Flows.jl, one of `Flows.imex_schemes`, `:CNRK2`,
+`:CB3R2R2`, `:CB3R2R3e`, `:CB3R2R3c` or `:CB4R3R4`. `array` and `tasks` are
+those of the section above.
 
-The storage of the batches of `B` fields, the terms with their plans and
-arrays and the registers of the scheme, lives in the propagator. It is built
-once, at the first call with `B` fields, and every later call with `B` fields
-only looks it up, so that a call allocates no batch, but for the stages that
-`stages` returns. It is kept by batch size because MultipleShooting calls the
-propagator with batches of different sizes, the seeds and the directions, and
-by task. What the tangent equation adds for `K`
-perturbations of `B` fields, and what `adjoint!` adds, its term and its
-registers, are built at their own first calls, so that a search that never
-calls them holds none of it. The second form is the propagator at another
-Reynolds number. It shares all of it with `P` and costs nothing. The two must
-not run at the same time.
+A propagator is of one size, batches of `B` fields with `k′` perturbations
+each, `k′ = 0` for none. Its workspace, the batches that its flows advance,
+the terms with their plans and arrays and the registers of the scheme, is made
+with it, so that a call allocates no batch, but for the stages that `stages`
+returns. `tangent!` takes a vector of `k′` batches of perturbations, or one
+batch when `k′ = 1`, as `forced!`. `adjoint!` needs `adjoint=true`. A call of
+another size is an error. `KolmogorovPropagator(P, Re₂)` is the propagator at
+another Reynolds number. It shares the workspace of `P` and costs nothing. The
+two must not run at the same time.
+
+A search calls a few sizes, all known before it starts: the seeds alone, the
+seeds with one perturbation each, for a product of the Jacobian, and the seeds
+with the `k′` directions of a subspace step. `propagators` makes a propagator
+for each size, with the same keywords, in a dictionary by size, `D[B, k′]`.
+The dictionary is itself a propagator, which hands every call to the one of
+its size: the equation alone to that of `B` fields with the fewest
+perturbations, one batch of perturbations to `(B, 1)` and `k′` of them to
+`(B, k′)`. A search with `m` seeds and a subspace of `k′` directions takes
+`sizes = [(m, 1), (m, k′)]`, the sweeps of `N` segments with `k` vectors
+`[(1, k), (N, k)]`.
 
 | function | what it does |
 |---|---|
@@ -168,6 +181,7 @@ over the same `S`.
 ```julia
 using MultipleShooting
 
+P = propagators(n, m, Re, kf; sizes=[(size(X, 3), 1), (size(X, 3), k′)])
 z = ShootingVector(X, [T, s])                     # X an FTFields, the seeds
 F = Residual(P)
 J = Jacobian(P, z)
@@ -177,7 +191,7 @@ The inner product of the fields is the method of `dots` of MultipleShooting
 for a batch of fields, so that the Krylov method, the phase conditions and the
 preconditioner all use it. For a search or a
 continuation with the Reynolds number free, the family of propagators is
-`Re -> KolmogorovPropagator(P, Re)`. The segments have equal lengths.
+`Re -> propagators(D, Re)`. The segments have equal lengths.
 
 ## Tests and examples
 
@@ -196,7 +210,7 @@ falling as the square of the increment, `rhs!` against a short step of
 and `adjoint!` and `AdjointTerm` against `tangent!` and `TangentTerm` by the
 identity of the transpose. They check that the flow commutes with the shift
 along `x`, the rotation by π and the shift-reflect, that the advection keeps
-the energy and the enstrophy, that the storage of a batch size is built once,
+the energy and the enstrophy, that a call allocates much less than a batch,
 and the methods of MultipleShooting on a product with its Jacobian. The files
 of `test/` hold them by topic.
 
