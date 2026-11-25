@@ -12,8 +12,8 @@ orbits by multiple shooting.
 The equation, its terms and their names are those of OpenKolmogorovFlow.jl
 (OKF). The time stepping is that of Flows.jl, with constant steps: the IMEX
 Runge–Kutta scheme `CB3R2R3e` by default, or `CNRK2`, `CB3R2R2`, `CB3R2R3c` or
-`CB4R3R4` with the keyword `scheme`. OKF, Flows, MultipleShooting and NKRoots
-are dependencies that are not registered: develop them in the environment.
+`CB4R3R4` with the keyword `scheme`. OKF, Flows and MultipleShooting are
+dependencies that are not registered: develop them in the environment.
 
 ## The state
 
@@ -30,10 +30,30 @@ the rows and `k` along `y` across the columns, in the order
 `apply_symmetry!` imposes them.
 
 This is the `FTField{n, m}` of OKF without the modes that it keeps at zero, and
-transposed. `FTFields(Ωs)` makes a batch from a vector of fields of OKF, and
-`FTField(X, b, m)` gives one back. `FTFields(data)` wraps an array of
-coefficients, and `parent(X)` returns it. A batch holds its wavenumbers, `X.j`
-and `X.k`, computed once, as arrays that broadcast against it.
+transposed. A batch is made by one of four constructors:
+
+```julia
+X = FTFields(data, n)         # wraps the coefficients data, (n+1, 2n+1, B)
+X = FTFields(data)            # the same, with n from the size of data
+X = FTFields(Ωs)              # from a vector of fields of OKF, on the CPU
+X = FTFields(n, B; device=:cpu)   # B fields of zeros, on :cpu or :gpu
+```
+
+The first is the inner one: it keeps `data`, without copying, and builds from
+`n`, on the device of `data`, the wavenumbers `X.j` (a column) and `X.k` (a
+row), which broadcast against the batch, and the weights `X.w` (a column) of
+the inner product. `parent(X)` returns the coefficients, and `FTField(X, b, m)`
+gives field `b` back as a field of OKF. `view(X, :, :, r)` with a range `r` is
+the batch of those fields, sharing the coefficients.
+
+The inner product of two fields is the mean of `ω₁ ω₂`. The modes with
+`j ≥ 1` stand for their conjugates too, and count twice, which `X.w` holds.
+`dots(X, Y)` gives it field by field, a real array `(1, 1, B)`, and
+`LinearAlgebra.dot(X, Y)` is its sum over the fields. Both are real and
+weighted. `dots` is the method of `MultipleShooting.dots` for a batch, and
+`MultipleShooting.states(X, r)` is `view(X, :, :, r)`, so that the first and
+the last states of the seeds, which a search takes, are batches and keep this
+product.
 
 On the grid a batch is a `Fields{m}`, a real array `(2m+2, 2m+2, B)` with `x`
 down the rows and `y` across the columns, the `Field{m}` of OKF transposed.
@@ -42,7 +62,7 @@ down the rows and `y` across the columns, the `Field{m}` of OKF transposed.
 
 The code is generic over the array of a batch. Every operation is a broadcast
 or a transform over its first two dimensions, and acts on all the fields of
-the batch. The keywords `device` and `tasks` of the propagator say where a
+the batch. The keywords `device` and `tasks` of the propagators say where a
 batch runs.
 
 | keywords | where a batch runs |
@@ -64,7 +84,7 @@ tasks. The other functions run on one. Start Julia with at least `N` threads,
 
 | file | what it holds |
 |---|---|
-| `ftfields.jl` | `FTFields`, a batch in Fourier space, with its wavenumbers, `apply_symmetry!`, the inner product, the passage from and to OKF |
+| `ftfields.jl` | `FTFields`, a batch in Fourier space, with its wavenumbers and weights, `apply_symmetry!`, `dots` and `dot`, the methods of MultipleShooting on a batch, the passage from and to OKF |
 | `fields.jl` | `Fields`, a batch on the grid |
 | `operators.jl` | `ddx!`, `ddy!`, `laplacian!`, `invlaplacian!` on batches |
 | `fft.jl` | `InverseFFT!` and `ForwardFFT!`, between the two |
@@ -76,7 +96,9 @@ tasks. The other functions run on one. Start Julia with at least `N` threads,
 | `dynamics/righthandside.jl` | `RightHandSide`, the time derivative of the fields |
 | `dynamics/xshift.jl` | `XShift`, the shift along `x` and its generator |
 | `dynamics/adjointpropagator.jl` | `AdjointPropagator`, the transpose of the tangent, back over the stages |
-| `dynamics/chunks.jl`, `flows.jl` | what they share: the chunks of the tasks on the CPU, the flows of Flows.jl at another Reynolds number |
+| `dynamics/checks.jl`, `chunks.jl`, `flows.jl` | what they share: the checks of their arguments, the chunks of the tasks on the CPU, the flows of Flows.jl at another Reynolds number |
+| `BatchedKolmogorovFlow.jl` | the module, its exports and the order of the includes |
+| `ext/BatchedKolmogorovFlowCUDAExt.jl` | the extension that gives the arrays of the GPU, `CuArray`, once `using CUDA` |
 
 The advection is written in the form of Basdevant (1983),
 `(∂²/∂x² - ∂²/∂y²)(u v) + ∂²/∂x∂y (v² - u²)`, which needs the velocity alone on
@@ -88,24 +110,28 @@ so that the products have no aliasing on the modes kept.
 ```julia
 using BatchedKolmogorovFlow
 
-G  = NonlinearPropagator(n, m, Re, kf; B, dt=0.01, scheme=:CB3R2R3e, device=:cpu, tasks=1)
-L  = TangentPropagator(n, m, Re, kf; B, k′=1, forced=false, dt=0.01, scheme=:CB3R2R3e,
-                       device=:cpu, tasks=1)
+G  = NonlinearPropagator(n, m, Re, kf; B, dt=0.01, scheme=:CB3R2R3e,
+                         device=:cpu, tasks=1)
+L  = TangentPropagator(n, m, Re, kf; B, k′=1, forced=false, dt=0.01,
+                       scheme=:CB3R2R3e, device=:cpu, tasks=1)
 F  = RightHandSide(n, m, Re, kf; B, device=:cpu)
 S  = XShift()
 A  = AdjointPropagator(n, m, Re; B, scheme=:CB3R2R3e, device=:cpu)
 ```
 
-`scheme` is the scheme of Flows.jl, one of `Flows.imex_schemes`, `:CNRK2`,
-`:CB3R2R2`, `:CB3R2R3e`, `:CB3R2R3c` or `:CB4R3R4`. `device` and `tasks` are
-those of the section above.
+`scheme` is a key of `Flows.imex_schemes`: `:CNRK2`, `:CB3R2R2`, `:CB3R2R3e`,
+`:CB3R2R3c` or `:CB4R3R4`. `device` and `tasks` are those of the section
+above. `B` has no default, and `kf` is in `1:n`.
 
 Each object has one task, which it does when called, on batches of `B` fields,
 and holds the workspaces of that task, made with it, so that a call allocates
 no batch, but for the stages that `stages` returns. A call with another number
-of fields is an error. Each takes a second form, `G = NonlinearPropagator(G,
-Re₂)` and so on, the object at another Reynolds number, which shares its
-workspaces and costs nothing, and must not run at the same time as it.
+of fields is an error. Each takes a second form, `NonlinearPropagator(G, Re₂)`, `TangentPropagator(L,
+Re₂)`, `RightHandSide(F, Re₂)`, `AdjointPropagator(A, Re₂)`, the object at
+another Reynolds number, which shares its workspaces and its Flows.jl flow,
+rebuilt there around the same terms and registers, and costs nothing. Two that
+share must not run at the same time. `XShift(S, Re₂)` returns `S`, which does
+not depend on the Reynolds number.
 
 | call | what it does |
 |---|---|
@@ -119,10 +145,10 @@ workspaces and costs nothing, and must not run at the same time as it.
 | `dots(X, Y)` | the inner products of the fields one by one, the mean of `ω₁ ω₂`, a real array `(1, 1, B)`: the method of `dots` of MultipleShooting |
 | `dot(X, Y)` | their sum over the fields, a method of `LinearAlgebra.dot` |
 
-Every call takes views of a batch, `view(X, :, :, b)`. The flow, the tangent,
-the right-hand side, `stages` and the adjoint first give their input the
-symmetry of fields, by `apply_symmetry!`, so that the flow, its tangent and its
-adjoint vanish on what is not a field.
+Every call takes views of a batch, `view(X, :, :, r)` with a range `r`. The
+flow, the tangent, the right-hand side, `stages` and the adjoint first give
+their input the symmetry of fields, by `apply_symmetry!`, so that the flow, its
+tangent and its adjoint vanish on what is not a field. The shift does not.
 
 Field by field the flow, the tangent, the adjoint and the right-hand side give
 the results of OKF with Flows to rounding. The forced tangent treats its
@@ -166,32 +192,45 @@ over the same `S`.
 
 ## With MultipleShooting
 
+MultipleShooting.jl takes a callable for each part of a search: `Residual(G;
+S)`, `Jacobian(L, F, z; S, dS, dG)`, `Subspace(L, z; k′, S)`,
+`Preconditioner(L, F, z; k′, S, dS)`, `tangent_sensitivity(L, Lp, F, z; S, dS,
+dG)`, and `freesearch!` and `continuation!`. A relative periodic orbit has the
+shift `S` and its generator `dS`, both the `XShift()` of this package. The
+search below leaves the Reynolds number free, from the seeds `X`, a batch of
+`ns` fields, one per segment, the period `T` and the shift `s`.
+
 ```julia
 using MultipleShooting
 
-m  = size(X, 3)                                   # X an FTFields, the seeds
 z  = ShootingVector(X, [T, s])
-G  = NonlinearPropagator(n, m, Re, kf; B=m)
-L  = TangentPropagator(n, m, Re, kf; B=m)
-Lk = TangentPropagator(n, m, Re, kf; B=m, k′=k′)
-F  = RightHandSide(n, m, Re, kf; B=m)
+G  = NonlinearPropagator(n, m, Re, kf; B=ns)
+L  = TangentPropagator(n, m, Re, kf; B=ns)                  # k′ = 1
+Lk = TangentPropagator(n, m, Re, kf; B=ns, k′=k′)           # the preconditioner
+Lp = TangentPropagator(n, m, Re, kf; B=ns, forced=true)     # d/dRe
+F  = RightHandSide(n, m, Re, kf; B=ns)
 S  = XShift()
 
-R = Residual(G; S=S)
-J = Jacobian(L, F, z; S=S, dS=S)
 M = Preconditioner(Lk, F, z; k′=k′, S=S, dS=S)
+
+# each object at the Reynolds number Re, by its second form
+family(x::NonlinearPropagator, Re) = NonlinearPropagator(x, Re)
+family(x::TangentPropagator,   Re) = TangentPropagator(x, Re)
+family(x::RightHandSide,       Re) = RightHandSide(x, Re)
+family(x::XShift,              Re) = XShift(x, Re)
+
+out = freesearch!(family, G, L, F, z, Re; Lp=Lp, S=S, dS=S, precond=M)
 ```
 
-Each part of a search takes the objects it calls: the residual the flow, the
-Jacobian the tangent of one perturbation, and the subspace iteration and its
-preconditioner the tangent of `k′`. The inner product of the fields is the
-method of `dots` of MultipleShooting for a batch of fields, so that the Krylov
-method, the phase conditions and the preconditioner all use it. For a search or
-a continuation with the Reynolds number free, the forced tangent is
-`TangentPropagator(…; B=m, forced=true)`, and the family moves every object by
-its second form, one method per type, as
-`family(x::NonlinearPropagator, Re) = NonlinearPropagator(x, Re)`, the shift
-`XShift(S, Re)` itself. The segments have equal lengths.
+`family(x, Re)` moves each object, and those of the preconditioner, to the
+Reynolds number, sharing their workspaces. `L` is the tangent of one
+perturbation of every field, for the Jacobian, `Lk` that of `k′`, which the
+subspace iteration and the preconditioner call, and `Lp` the tangent forced by
+`-Δω/Re²`, which gives the column of the Reynolds number. At a fixed Reynolds
+number the search is made of `Residual(G; S=S)` and `Jacobian(L, F, z; S=S,
+dS=S)`, with `M` as preconditioner. The inner product of the fields is `dots`
+above, so that the Krylov method, the phase conditions and the preconditioner
+all use it. The segments have equal lengths.
 
 ## Tests and examples
 
