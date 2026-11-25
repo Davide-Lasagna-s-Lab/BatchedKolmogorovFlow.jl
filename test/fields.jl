@@ -12,7 +12,7 @@
     @test parent(X) isa ARRAY
     @test vec(cpu(X.j)) == 0:n
     @test vec(cpu(X.k)) == [0:n; -n:-1]
-    @test cpu(similar(X).j) == cpu(X.j) && cpu(view(X, :, :, 1:2).k) == cpu(X.k)
+    @test similar(X).j === X.j && copy(X).k === X.k && view(X, :, :, 1:2).w === X.w
     @test vec(cpu(X.w)) == [1; fill(2, n)]
     @test all(parent(OKF.FTField(X, i, m)) == parent(Ωs[i]) for i in 1:3)
     @test_throws ArgumentError FTFields(zeros(ComplexF64, 4, 8, 2))
