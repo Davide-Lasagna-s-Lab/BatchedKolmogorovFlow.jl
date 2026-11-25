@@ -30,14 +30,7 @@ struct RightHandSide{XT<:FTFields, ET<:ExplicitTerm}
                            B::Int,
                       device::Symbol=:cpu)
         # ---- input checks ----
-        2m + 2 >= 3n + 1 ||
-            throw(ArgumentError("the grid must dealias the products, 2m + 2 at least 3n + 1"))
-        1 <= kf <= n ||
-            throw(ArgumentError("the forcing wavenumber must be in 1:n"))
-        B >= 1 ||
-            throw(ArgumentError("a batch has B ≥ 1 fields"))
-        device in (:cpu, :gpu) ||
-            throw(ArgumentError("device must be :cpu or :gpu"))
+        _check(n, m, B, device; kf=kf)
 
         # ---- the fields, and the explicit term for batches like them ----
         X        = FTFields(n, B; device=device)

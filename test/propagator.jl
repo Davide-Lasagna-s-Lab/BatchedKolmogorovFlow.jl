@@ -17,7 +17,7 @@ end
     D = dynamics(3; k′=2)
 
     # ---- what they hold: the size, and the workspaces on the device ----
-    @test (D.G.n, D.G.m, D.G.Re, D.G.kf, D.G.dt, D.G.B) == (n, m, Re, kf, dt, 3)
+    @test (D.G.Re, D.G.dt, D.G.B) == (Re, dt, 3)
     @test parent(D.G.whole.X) isa ARRAY{ComplexF64, 3}
     @test (D.L.B, D.L.k′, D.L.forced, D.Lp.forced) == (3, 2, false, true)
     @test size(D.L.chunks[1].Z, 3) == 9

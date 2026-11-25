@@ -63,17 +63,9 @@ struct TangentPropagator{K}
                           device::Symbol=:cpu,
                            tasks::Int=1)
         # ---- input checks ----
-        2m + 2 >= 3n + 1 ||
-            throw(ArgumentError("the grid must dealias the products, 2m + 2 at least 3n + 1"))
-        1 <= kf <= n ||
-            throw(ArgumentError("the forcing wavenumber must be in 1:n"))
-        B >= 1 && k′ >= 1 ||
-            throw(ArgumentError("a batch has B ≥ 1 fields with k′ ≥ 1 perturbations each"))
-        device in (:cpu, :gpu) ||
-            throw(ArgumentError("device must be :cpu or :gpu"))
-        haskey(Flows.imex_schemes, scheme) ||
-            throw(ArgumentError("scheme must be one of Flows.imex_schemes, " *
-                                "$(sort(collect(keys(Flows.imex_schemes))))"))
+        _check(n, m, B, device; kf=kf, scheme=scheme)
+        k′ >= 1 ||
+            throw(ArgumentError("a tangent propagator has k′ ≥ 1 perturbations of every field"))
 
         # ---- the chunk of the fields `fields`: the bundle of as many fields with their k′
         #      perturbations, and the flow of the tangent equation that advances it, forced or

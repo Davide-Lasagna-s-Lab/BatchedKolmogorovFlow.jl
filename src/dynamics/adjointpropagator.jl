@@ -41,15 +41,7 @@ struct AdjointPropagator{WT<:FTFields, ΨT<:Flows.Flow}
                           scheme::Symbol=:CB3R2R3e,
                           device::Symbol=:cpu)
         # ---- input checks ----
-        2m + 2 >= 3n + 1 ||
-            throw(ArgumentError("the grid must dealias the products, 2m + 2 at least 3n + 1"))
-        B >= 1 ||
-            throw(ArgumentError("a batch has B ≥ 1 fields"))
-        device in (:cpu, :gpu) ||
-            throw(ArgumentError("device must be :cpu or :gpu"))
-        haskey(Flows.imex_schemes, scheme) ||
-            throw(ArgumentError("scheme must be one of Flows.imex_schemes, " *
-                                "$(sort(collect(keys(Flows.imex_schemes))))"))
+        _check(n, m, B, device; scheme=scheme)
 
         # ---- the adjoint fields, the adjoint term for batches like them, and the registers of
         #      the scheme in the mode of the discrete adjoint ----
