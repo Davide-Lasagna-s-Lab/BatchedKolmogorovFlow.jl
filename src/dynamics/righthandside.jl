@@ -3,7 +3,7 @@
 # phase condition in time.
 
 """
-    RightHandSide(n, m, Re, kf; B, device=:cpu)
+    RightHandSide(n, m, Re, kf; B, device=:cpu, kernels=true)
     RightHandSide(F, Re)
 
 The time derivative of the vorticity equation, advection, forcing and viscous term, called as
@@ -15,7 +15,7 @@ another number of fields is an error. The second form is `F` at another Reynolds
 shares them.
 
 # Arguments
-- `n`, `m`, `Re`, `kf`, `B`, `device`: those of the [`NonlinearPropagator`](@ref).
+- `n`, `m`, `Re`, `kf`, `B`, `device`, `kernels`: those of the [`NonlinearPropagator`](@ref).
 """
 struct RightHandSide{XT<:FTFields, ET<:ExplicitTerm}
           Re::Float64   # the Reynolds number
@@ -28,13 +28,14 @@ struct RightHandSide{XT<:FTFields, ET<:ExplicitTerm}
                           Re::Real,
                           kf::Int;
                            B::Int,
-                      device::Symbol=:cpu)
+                      device::Symbol=:cpu,
+                     kernels::Bool=true)
         # ---- input checks ----
         _check(n, m, B, device; kf=kf)
 
         # ---- the fields, and the explicit term for batches like them ----
         X        = FTFields(n, B; device=device)
-        explicit = ExplicitTerm(X, m, kf)
+        explicit = ExplicitTerm(X, m, kf; kernels=kernels)
 
         return new{typeof(X), typeof(explicit)}(Float64(Re),
                                                 B,

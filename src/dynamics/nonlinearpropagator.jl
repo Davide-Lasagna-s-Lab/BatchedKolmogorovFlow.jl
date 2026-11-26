@@ -10,7 +10,8 @@
 # (chunks.jl).
 
 """
-    NonlinearPropagator(n, m, Re, kf; B, dt=0.01, scheme=:CB3R2R3e, device=:cpu, tasks=1)
+    NonlinearPropagator(n, m, Re, kf; B, dt=0.01, scheme=:CB3R2R3e, device=:cpu, tasks=1,
+                        kernels=true)
     NonlinearPropagator(G, Re)
 
 The flow of two-dimensional Kolmogorov flow on batches of `B` vorticity fields, called as
@@ -48,6 +49,9 @@ propagators that share their workspaces must not run at the same time.
   own thread, while the others advance theirs. The fields of a batch do not act on one another,
   so that the result is that of one task, to rounding. Start Julia with at least as many threads,
   `julia -t 16` for `tasks=16`.
+- `kernels::Bool=true`: whether the explicit term is computed entry by entry, in three passes
+  over its arrays (kernels.jl), or by its 13 broadcasts. The result is the same to rounding. On
+  the GPU a pass is a kernel, so that a step launches fewer of them.
 """
 struct NonlinearPropagator{K}
         Re::Float64     # the Reynolds number
@@ -67,7 +71,8 @@ struct NonlinearPropagator{K}
                                 dt::Real=0.01,
                             scheme::Symbol=:CB3R2R3e,
                             device::Symbol=:cpu,
-                             tasks::Int=1)
+                             tasks::Int=1,
+                           kernels::Bool=true)
         # ---- input checks ----
         _check(n, m, B, device; kf=kf, scheme=scheme)
 
@@ -75,7 +80,7 @@ struct NonlinearPropagator{K}
         #      that advances it ----
         function chunk(fields)
             X = FTFields(n, length(fields); device=device)
-            ϕ = Flows.flow(ExplicitTerm(X, m, kf),
+            ϕ = Flows.flow(ExplicitTerm(X, m, kf; kernels=kernels),
                            ImplicitTerm(X, Re),
                            Flows.imex_schemes[scheme](X),
                            Flows.TimeStepConstant(dt))

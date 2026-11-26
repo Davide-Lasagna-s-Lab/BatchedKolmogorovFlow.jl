@@ -7,7 +7,7 @@
 
 """
     TangentPropagator(n, m, Re, kf; B, k′=1, forced=false, dt=0.01, scheme=:CB3R2R3e,
-                      device=:cpu, tasks=1)
+                      device=:cpu, tasks=1, kernels=true)
     TangentPropagator(L, Re)
 
 The flow of two-dimensional Kolmogorov flow on batches of `B` vorticity fields with its tangent,
@@ -33,9 +33,10 @@ another size is an error. The second form is the propagator `L` at another Reyno
 shares its workspaces and costs nothing.
 
 # Arguments
-- `n`, `m`, `Re`, `kf`, `B`, `dt`, `scheme`, `device`, `tasks`: those of the
+- `n`, `m`, `Re`, `kf`, `B`, `dt`, `scheme`, `device`, `tasks`, `kernels`: those of the
   [`NonlinearPropagator`](@ref). The tasks advance each its chunk of fields with their
-  perturbations.
+  perturbations. With `kernels` the term of the bundle is three passes in place of its 17
+  broadcasts, forced or not.
 - `k′::Int=1`: the perturbations of every field.
 - `forced::Bool=false`: whether the tangent equation is forced by `-Δω/Re²`.
 """
@@ -61,7 +62,8 @@ struct TangentPropagator{K}
                               dt::Real=0.01,
                           scheme::Symbol=:CB3R2R3e,
                           device::Symbol=:cpu,
-                           tasks::Int=1)
+                           tasks::Int=1,
+                         kernels::Bool=true)
         # ---- input checks ----
         _check(n, m, B, device; kf=kf, scheme=scheme)
         k′ >= 1 ||
@@ -72,7 +74,7 @@ struct TangentPropagator{K}
         #      not ----
         function chunk(fields)
             Z    = FTFields(n, (1 + k′)*length(fields); device=device)
-            term = TangentTerm(Z, k′, m, kf)
+            term = TangentTerm(Z, k′, m, kf; kernels=kernels)
             ϕ    = Flows.flow(forced ? ForcedTangentTerm(term, Re) : term,
                               ImplicitTerm(Z, Re),
                               Flows.imex_schemes[scheme](Z),

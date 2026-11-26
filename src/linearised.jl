@@ -100,7 +100,7 @@ function _unbundle!(X::FTFields, V, Z::FTFields, fields::UnitRange{Int}=1:size(X
 end
 
 """
-    TangentTerm(Z, k′, m, kf)
+    TangentTerm(Z, k′, m, kf; kernels=true)
 
 The explicit term of the vorticity equation and of its tangent equation, for bundles like `Z`, in
 which every field is followed by its `k′` perturbations, with its transforms and its arrays.
@@ -121,19 +121,22 @@ perturbations.
 - `k′::Int`: the perturbations of every field.
 - `m::Int`: the grid of the products has `2m+2` points along each direction, at least `3n + 1`.
 - `kf::Int`: the wavenumber of the forcing.
+- `kernels::Bool=true`: whether the term is computed entry by entry, in three passes over its
+  arrays (kernels.jl), or by its broadcasts, as for [`ExplicitTerm`](@ref).
 """
 struct TangentTerm{FT<:FTFields, F<:Fields, IT, FFT}
-       UV::FT  # the velocity of the bundle in Fourier space, along x and along y in the two halves
-       PQ::FT  # the transforms of the two products, in the two halves
-       uv::F   # the velocity on the grid, u and v
-       pq::F   # the two products: u v and v² - u² for a field, u v′ + u′ v and 2 (v v′ - u u′)
-               # for a perturbation
-    ifft!::IT  # from the velocity to the grid, both halves in one transform
-     fft!::FFT # from the products to Fourier space, both halves in one transform
-       k′::Int # the perturbations of every field
-       kf::Int # the wavenumber of the forcing
+         UV::FT   # the velocity of the bundle in Fourier space, along x and y in the two halves
+         PQ::FT   # the transforms of the two products, in the two halves
+         uv::F    # the velocity on the grid, u and v
+         pq::F    # the two products: u v and v² - u² for a field, u v′ + u′ v and 2 (v v′ - u u′)
+                  # for a perturbation
+      ifft!::IT   # from the velocity to the grid, both halves in one transform
+       fft!::FFT  # from the products to Fourier space, both halves in one transform
+         k′::Int  # the perturbations of every field
+         kf::Int  # the wavenumber of the forcing
+    kernels::Bool # whether the term is computed entry by entry, or by broadcasts
 
-    function TangentTerm(Z::FTFields, k′::Int, m::Int, kf::Int)
+    function TangentTerm(Z::FTFields, k′::Int, m::Int, kf::Int; kernels::Bool=true)
         # ---- input checks ----
         size(Z, 3) % (1 + k′) == 0 ||
             throw(ArgumentError("a bundle holds 1 + k′ fields for every field"))
@@ -154,11 +157,16 @@ struct TangentTerm{FT<:FTFields, F<:Fields, IT, FFT}
                                                                        ifft!,
                                                                        fft!,
                                                                        k′,
-                                                                       kf)
+                                                                       kf,
+                                                                       kernels)
     end
 end
 
 function (eq::TangentTerm)(t::Real, Z::FTFields{n}, dZdt::FTFields{n}) where {n}
+    # ---- entry by entry (kernels.jl) ----
+    eq.kernels &&
+        return _kernels!(dZdt, eq, Z, eq.k′, 0.0)
+
     # ---- the velocity of the fields and of their perturbations, and on the grid, its two
     #      components in one transform ----
     _velocity!(eq.UV, Z)
@@ -213,6 +221,10 @@ struct ForcedTangentTerm{T<:TangentTerm}
 end
 
 function (eq::ForcedTangentTerm)(t::Real, Z::FTFields, dZdt::FTFields)
+    # ---- entry by entry, the forcing in the pass of the advection (kernels.jl) ----
+    eq.tangent.kernels &&
+        return _kernels!(dZdt, eq.tangent, Z, eq.tangent.k′, 1/eq.Re^2)
+
     # ---- the advection, of the fields and linearised ----
     eq.tangent(t, Z, dZdt)
 

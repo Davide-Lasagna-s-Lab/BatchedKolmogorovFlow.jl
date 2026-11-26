@@ -12,7 +12,7 @@
 # inverse transforms and two forward ones, where the left side needs four and one.
 
 """
-    ExplicitTerm(X, m, kf)
+    ExplicitTerm(X, m, kf; kernels=true)
 
 The advection and the forcing of the vorticity equation, for batches of fields like `X`, with
 its transforms and its arrays. Called as `eq(t, Ω, dΩdt)`, as Flows.jl calls an explicit term,
@@ -26,17 +26,20 @@ for every field of the batch `Ω`, and returns it.
 - `X::FTFields`: a batch of fields, for its size and its device.
 - `m::Int`: the grid of the products has `2m+2` points along each direction, at least `3n + 1`.
 - `kf::Int`: the wavenumber of the forcing.
+- `kernels::Bool=true`: whether the term is computed entry by entry, in three passes over its
+  arrays (kernels.jl), three kernels on the GPU, or by its broadcasts: the same to rounding.
 """
 struct ExplicitTerm{FT<:FTFields, F<:Fields, IT, FFT}
-       UV::FT  # the velocity in Fourier space, along x and along y in the two halves, 2B fields
-       PQ::FT  # the transforms of the two products, u v and v² - u², in the two halves
-       uv::F   # the velocity on the grid, u and v
-       pq::F   # the two products, u v and v² - u²
-    ifft!::IT  # from the velocity to the grid, both halves in one transform
-     fft!::FFT # from the products to Fourier space, both halves in one transform
-       kf::Int # the wavenumber of the forcing
+         UV::FT   # the velocity in Fourier space, along x and along y in the two halves, 2B fields
+         PQ::FT   # the transforms of the two products, u v and v² - u², in the two halves
+         uv::F    # the velocity on the grid, u and v
+         pq::F    # the two products, u v and v² - u²
+      ifft!::IT   # from the velocity to the grid, both halves in one transform
+       fft!::FFT  # from the products to Fourier space, both halves in one transform
+         kf::Int  # the wavenumber of the forcing
+    kernels::Bool # whether the term is computed entry by entry, or by broadcasts
 
-    function ExplicitTerm(X::FTFields, m::Int, kf::Int)
+    function ExplicitTerm(X::FTFields, m::Int, kf::Int; kernels::Bool=true)
         # ---- the batches of the two components and of the two products, twice the fields of X,
         #      in Fourier space and on the grid ----
         UV = _twice(X)
@@ -52,11 +55,16 @@ struct ExplicitTerm{FT<:FTFields, F<:Fields, IT, FFT}
                                                                        similar(uv),
                                                                        ifft!,
                                                                        fft!,
-                                                                       kf)
+                                                                       kf,
+                                                                       kernels)
     end
 end
 
 function (eq::ExplicitTerm)(t::Real, Ω::FTFields, dΩdt::FTFields)
+    # ---- entry by entry: the term of a bundle with no perturbation (kernels.jl) ----
+    eq.kernels &&
+        return _kernels!(dΩdt, eq, Ω, 0, 0.0)
+
     # ---- the velocity, and on the grid, its two components in one transform ----
     _velocity!(eq.UV, Ω)
     eq.ifft!(eq.uv, eq.UV)
