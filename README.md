@@ -1,21 +1,170 @@
+<p align="center">
+  <img src="assets/logo.svg" alt="BatchedKolmogorovFlow.jl" width="760">
+</p>
+
 # BatchedKolmogorovFlow.jl
 
-Two-dimensional Kolmogorov flow on batches of vorticity fields. The package
-gives the vorticity equation, its tangent equation and the transpose of the
-tangent, with all the fields of a batch advanced together, on a GPU, on one
-core of a CPU or on several. A batch may hold the states of many flows, or the
-segments of one orbit with their perturbations. The package gives the objects
-of the dynamics that MultipleShooting.jl calls, the flow, the tangent, the
-right-hand side and the shift, so that it serves the searches of periodic
-orbits by multiple shooting.
+Two-dimensional Kolmogorov flow on batches of vorticity fields, in Julia. The package gives the
+vorticity equation, its tangent equation and the transpose of the tangent, with all the fields of
+a batch advanced together, on a GPU, on one core of a CPU or on several. A batch may hold the
+states of many flows, or the segments of one orbit with their perturbations: the objects of the
+package are those that [MultipleShooting.jl](https://github.com/gasagna/MultipleShooting.jl)
+calls in its searches for periodic orbits.
 
-The equation, its terms and their names are those of OpenKolmogorovFlow.jl
-(OKF). The time stepping is that of Flows.jl, with constant steps: the IMEX
-Runge–Kutta scheme `CB3R2R3e` by default, or `CNRK2`, `CB3R2R2`, `CB3R2R3c` or
-`CB4R3R4`, with the viscous term implicit, or the exponential `ETDRK2` or
-`ETDRK4`, with the viscous term exact, by the keyword `scheme`. OKF, Flows and
-MultipleShooting are dependencies that are not registered: develop them in the
-environment.
+The package has four parts, and this page follows them.
+
+- **The state.** `FTFields`, a batch of fields in Fourier space, an array with the fields along
+  its last dimension, with the inner product of the fields.
+- **The dynamics.** Callable objects, each with one task and the workspaces of that task: the flow,
+  the tangent of any number of perturbations, forced or not, the right-hand side, the shift, and
+  the adjoint.
+- **The devices.** The same code on a GPU and on a CPU, with the terms of the equation written
+  entry by entry, three kernels on the GPU, or as broadcasts.
+- **The searches.** The objects in the calls of MultipleShooting.jl, at a fixed Reynolds number or
+  with the Reynolds number free.
+
+The equation, its terms and their names are those of
+[OpenKolmogorovFlow.jl](https://github.com/Davide-Lasagna-s-Lab/OpenKolmogorovFlow.jl) (OKF),
+whose results the package gives field by field, to rounding. The time stepping is that of
+[Flows.jl](https://github.com/Davide-Lasagna-s-Lab/Flows.jl), with constant steps: the IMEX
+Runge–Kutta scheme `CB3R2R3e` by default, or `CNRK2`, `CB3R2R2`, `CB3R2R3c` or `CB4R3R4`, with the
+viscous term implicit, or the exponential `ETDRK2` or `ETDRK4`, with the viscous term exact, by the
+keyword `scheme`.
+
+**Contents.**
+[Installation](#installation) ·
+[Examples of use](#examples-of-use) ·
+[The state](#the-state) ·
+[On a GPU and on a CPU](#on-a-gpu-and-on-a-cpu) ·
+[Interface](#interface) ·
+[The adjoint](#the-adjoint) ·
+[With MultipleShooting](#with-multipleshooting) ·
+[The files](#the-files) ·
+[Tests and examples](#tests-and-examples) ·
+[References](#references)
+
+## Installation
+
+The package and its dependencies OpenKolmogorovFlow.jl, Flows.jl, MultipleShooting.jl and
+NKRoots.jl are not registered. Clone them side by side and develop them in the environment:
+
+```
+git clone https://github.com/Davide-Lasagna-s-Lab/Flows.jl
+git clone https://github.com/Davide-Lasagna-s-Lab/OpenKolmogorovFlow.jl
+git clone https://github.com/Davide-Lasagna-s-Lab/NKRoots.jl
+git clone https://github.com/gasagna/MultipleShooting.jl
+git clone https://github.com/Davide-Lasagna-s-Lab/BatchedKolmogorovFlow.jl
+julia -e 'using Pkg; Pkg.develop([PackageSpec(path=p) for p in ("Flows.jl", "OpenKolmogorovFlow.jl",
+          "NKRoots.jl", "MultipleShooting.jl", "BatchedKolmogorovFlow.jl")])'
+```
+
+CUDA.jl is not a dependency. Load it, `using CUDA`, and `device=:gpu` puts the batches on the GPU.
+
+## Examples of use
+
+[`examples/usage.jl`](examples/usage.jl) runs the examples of this section, each with a check,
+on the CPU, or on a GPU with `gpu` as its argument.
+
+**A batch.** `B` fields in Fourier space, one array with the fields along its third dimension.
+Here three smooth random ones: random coefficients that fall with the wavenumber, made fields by
+`apply_symmetry!`.
+
+```julia
+using BatchedKolmogorovFlow, LinearAlgebra, Random
+
+n, m, Re, kf = 21, 31, 40.0, 4      # modes, grid of 2m + 2 = 64 points, Reynolds number, forcing
+B            = 3
+
+X  = randn!(FTFields(n, B))         # an array (n+1, 2n+1, B)
+X .= X ./ (1 .+ X.j.^2 .+ X.k.^2)   # X.j and X.k are the wavenumbers, and broadcast against X
+BatchedKolmogorovFlow.apply_symmetry!(X)
+
+dots(X, X)                          # the inner product of each field with itself, (1, 1, B)
+dot(X, X)                           # their sum
+view(X, :, :, 1:2)                  # the first two fields, a batch that shares them
+```
+
+**The flow.** An object made once for batches of `B` fields, with its workspaces, which advances
+them together, in place.
+
+```julia
+G = NonlinearPropagator(n, m, Re, kf; B=B)
+Y = G(copy(X), 1.0)                 # every field advanced by one time unit
+```
+
+**The tangent.** The fields and their perturbations advanced together, the perturbations by the
+tangent equation: the derivative of the discrete flow. With `k′` perturbations of every field, a
+vector of `k′` batches, the fields are advanced once for all of them.
+
+```julia
+L  = TangentPropagator(n, m, Re, kf; B=B)
+LV = L(copy(X), copy(V), 1.0)       # V a batch like X, one perturbation of every field
+
+L₃ = TangentPropagator(n, m, Re, kf; B=B, k′=3)
+L₃(copy(X), Vs, 1.0)                # Vs a vector of three batches like X, advanced in place
+```
+
+**The Reynolds number.** The tangent forced by the derivative of the equation in the Reynolds
+number gives, from zero, the derivative of the flow in it. Every object has a second form, the
+object at another Reynolds number, which shares its workspaces.
+
+```julia
+Lp = TangentPropagator(n, m, Re, kf; B=B, forced=true)
+dR = Lp(copy(X), fill!(similar(X), 0), 1.0)     # dG/dRe at X
+
+G⁺ = NonlinearPropagator(G, Re + 1e-3)          # the flow at another Reynolds number
+```
+
+**The right-hand side and the shift.** The time derivative of every field, and the shift along
+`x`, the continuous symmetry of the flow, with its generator.
+
+```julia
+F  = RightHandSide(n, m, Re, kf; B=B)
+S  = XShift()
+
+F(dX, X)                            # dX = dω/dt at every field
+S(X, 0.7)                           # ω(x, y) → ω(x + 0.7, y), in place
+S(dX, X, 1)                         # dX = ∂ω/∂x, the generator of the shift
+```
+
+**The adjoint.** The transpose of the tangent, back over the stages of the flow, which are kept
+once and serve any number of adjoint fields.
+
+```julia
+A  = AdjointPropagator(n, m, Re; B=B)
+St = stages(G, X, 1.0)              # a forward pass from X, every stage kept
+AW = A(copy(W), St)                 # a backward pass: dots(LV, W) == dots(V, AW), to rounding
+```
+
+**On a GPU, and on several cores.** The same calls, with the batches on the device.
+
+```julia
+using CUDA
+
+G = NonlinearPropagator(n, m, Re, kf; B=B, device=:gpu)
+X = FTFields(CuArray(parent(X)))    # the batch on the GPU
+G(X, 1.0)
+
+G = NonlinearPropagator(n, m, Re, kf; B=64, tasks=8)    # on the CPU, eight chunks of fields
+```
+
+The checks that the script prints:
+
+```
+the flow: G(X, 1) against G(G(X, 0.5), 0.5), 1.3e-16
+the tangent: L(X, V, 1) against a centred difference of the flow, 1.6e-09
+three perturbations at once: the second against the tangent of it alone, 0.0e+00
+the forced tangent: against a centred difference in the Reynolds number, 7.6e-06
+the right-hand side: F(dX, X) against (G(X, h) - X)/h, h = 1e-4, 2.0e-04
+the generator of the shift: S(dX, X, 1) against a centred difference of S, 9.6e-10
+the shift and the flow: G(S(X, 0.7), 1) against S(G(X, 1), 0.7), 1.1e-15
+the adjoint: <L V, W> and <V, A W>, field by field,
+    [0.08994001053742048, 0.2790507182738552, -0.05341832223669146]
+    [0.08994001053742103, 0.27905071827385497, -0.05341832223669071]
+```
+
+The forced tangent takes its forcing as an explicit term of the scheme, so that it is the
+derivative of the flow up to the error of the scheme, here `1e-5`.
 
 ## The state
 
@@ -60,12 +209,18 @@ product.
 On the grid a batch is a `Fields{m}`, a real array `(2m+2, 2m+2, B)` with `x`
 down the rows and `y` across the columns, the `Field{m}` of OKF transposed.
 
+![The arrays of a batch, of a bundle and of a stage](assets/arrays.png)
+
+*The arrays, from Lasagna et al. (2026), drawn for three fields. There `K` is the largest
+wavenumber, `n` here, and `m` the number of segments of an orbit, the fields `B` of a batch. (a) A
+batch, the seeds of a search, and an evaluation of its residual by the flow. (b) The bundle of the
+tangent, every field followed by its `k′` perturbations, advanced as one batch. (c) A stage of
+the time step, the three passes of the terms, with the arrays on the grid in red.*
+
 ## On a GPU and on a CPU
 
-The code is generic over the array of a batch. Every operation is a broadcast
-or a transform over its first two dimensions, and acts on all the fields of
-the batch. The keywords `device` and `tasks` of the propagators say where a
-batch runs.
+The code is generic over the array of a batch. Every operation acts on all the fields of the
+batch. The keywords `device` and `tasks` of the propagators say where a batch runs.
 
 | keywords | where a batch runs |
 |---|---|
@@ -73,39 +228,38 @@ batch runs.
 | `device=:cpu` | On one core of the CPU, on `Array`s. FFTW does the transforms. An operation on an array runs on one core, so that a batch, however large, uses one core. |
 | `device=:cpu, tasks=N` | On `N` cores of the CPU. The batch is cut into `N` chunks of fields, and `N` tasks advance one chunk each, at the same time, each as a batch of its own on its own thread. |
 
-A batch of 10 fields with `tasks=4` is cut into the fields `1:2`, `3:5`, `6:7`
-and `8:10`. The fields of a batch do not act on one another, since a field
-with its perturbations is one segment of an orbit. The chunks are then
-separate integrations, and the result is that of one task, to rounding. The
-tasks run at the same time and cannot share arrays or plans, so that each has
-its own workspace. The flow and the tangent, forced or not, use the
-tasks. The other functions run on one. Start Julia with at least `N` threads,
-`julia -t N`.
+A batch of 10 fields with `tasks=4` is cut into the fields `1:2`, `3:5`, `6:7` and `8:10`. The
+fields of a batch do not act on one another, since a field with its perturbations is one segment
+of an orbit. The chunks are then separate integrations, and the result is that of one task, to
+rounding. The tasks run at the same time and cannot share arrays or plans, so that each has its
+own workspace. The flow and the tangent, forced or not, use the tasks. The other functions run on
+one. Start Julia with at least `N` threads, `julia -t N`.
 
-## The files
-
-| file | what it holds |
-|---|---|
-| `ftfields.jl` | `FTFields`, a batch in Fourier space, with its wavenumbers and weights, `apply_symmetry!`, `dots` and `dot`, the methods of MultipleShooting on a batch, the passage from and to OKF |
-| `fields.jl` | `Fields`, a batch on the grid |
-| `operators.jl` | `ddx!`, `ddy!`, `laplacian!`, `invlaplacian!` on batches |
-| `fft.jl` | `InverseFFT!` and `ForwardFFT!`, between the two |
-| `implicit.jl` | `ImplicitTerm`, the viscous term, implicit, or exact by the coefficients of the exponential schemes |
-| `nonlinear.jl` | `ExplicitTerm`, advection and forcing |
-| `linearised.jl` | `TangentTerm`, the linearised advection, `ForcedTangentTerm`, and `AdjointTerm`, its transpose |
-| `dynamics/nonlinearpropagator.jl` | `NonlinearPropagator`, the flow, and `stages` |
-| `dynamics/tangentpropagator.jl` | `TangentPropagator`, the flow with its tangent, forced or not |
-| `dynamics/righthandside.jl` | `RightHandSide`, the time derivative of the fields |
-| `dynamics/xshift.jl` | `XShift`, the shift along `x` and its generator |
-| `dynamics/adjointpropagator.jl` | `AdjointPropagator`, the transpose of the tangent, back over the stages |
-| `dynamics/checks.jl`, `chunks.jl`, `flows.jl` | what they share: the checks of their arguments, the chunks of the tasks on the CPU, the flows of Flows.jl at another Reynolds number |
-| `BatchedKolmogorovFlow.jl` | the module, its exports and the order of the includes |
-| `ext/BatchedKolmogorovFlowCUDAExt.jl` | the extension that gives the arrays of the GPU, `CuArray`, once `using CUDA` |
+### The terms entry by entry
 
 The advection is written in the form of Basdevant (1983),
-`(∂²/∂x² - ∂²/∂y²)(u v) + ∂²/∂x∂y (v² - u²)`, which needs the velocity alone on
-the grid. The grid has `2m+2` points along each direction, at least `3n + 1`,
-so that the products have no aliasing on the modes kept.
+`(∂²/∂x² - ∂²/∂y²)(u v) + ∂²/∂x∂y (v² - u²)`, which needs the velocity alone on the grid: two
+transforms to the grid and two back, each pair made as one transform of a batch of twice the
+fields. The grid has `2m+2` points along each direction, at least `3n + 1`, so that the products
+have no aliasing on the modes kept.
+
+Between its two transforms a term is three passes over its arrays (`src/kernels.jl`):
+
+| pass | from | to |
+|---|---|---|
+| the velocity | the fields | their velocity among the wavenumbers of the grid, with its zeros |
+| the products | the velocity on the grid | `u v` and `v² - u²`, and for a perturbation `u v′ + u′ v` and `2 (v v′ - u u′)` |
+| the advection | the transforms of the products | the term, with the symmetry of fields and the forcings |
+
+Each pass computes every entry of the array it writes from the indices of the entry, the
+wavenumbers among them, so that it reads no array of wavenumbers and makes no temporary. The
+explicit term is the term of a bundle with no perturbation, and the same three passes serve the
+flow, the tangent of any number of perturbations and the forced tangent. On the CPU a pass is a
+loop. On the GPU it is a kernel (`ext/kernels.jl`), and this is what the passes are for: a kernel
+costs its launch whatever it computes, and written as broadcasts the two terms launch 13 and 17.
+
+`kernels=true` is the default. `kernels=false` gives the broadcasts, the same to rounding, which
+the tests keep as the reference. On the CPU the two take the same time.
 
 ## Interface
 
@@ -113,18 +267,18 @@ so that the products have no aliasing on the modes kept.
 using BatchedKolmogorovFlow
 
 G  = NonlinearPropagator(n, m, Re, kf; B, dt=0.01, scheme=:CB3R2R3e,
-                         device=:cpu, tasks=1)
+                         device=:cpu, tasks=1, kernels=true)
 L  = TangentPropagator(n, m, Re, kf; B, k′=1, forced=false, dt=0.01,
-                       scheme=:CB3R2R3e, device=:cpu, tasks=1)
-F  = RightHandSide(n, m, Re, kf; B, device=:cpu)
+                       scheme=:CB3R2R3e, device=:cpu, tasks=1, kernels=true)
+F  = RightHandSide(n, m, Re, kf; B, device=:cpu, kernels=true)
 S  = XShift()
 A  = AdjointPropagator(n, m, Re; B, scheme=:CB3R2R3e, device=:cpu)
 ```
 
 `scheme` is a key of `Flows.imex_schemes`: `:CNRK2`, `:CB3R2R2`, `:CB3R2R3e`,
 `:CB3R2R3c` or `:CB4R3R4`, or the exponential `:ETDRK2` or `:ETDRK4`, all with
-their stages and their discrete adjoint. `device` and `tasks` are those of the
-section above. `B` has no default, and `kf` is in `1:n`.
+their stages and their discrete adjoint. `device`, `tasks` and `kernels` are
+those of the section above. `B` has no default, and `kf` is in `1:n`.
 
 Each object has one task, which it does when called, on batches of `B` fields,
 and holds the workspaces of that task, made with it, so that a call allocates
@@ -235,13 +389,39 @@ dS=S)`, with `M` as preconditioner. The inner product of the fields is `dots`
 above, so that the Krylov method, the phase conditions and the preconditioner
 all use it. The segments have equal lengths.
 
+![A Newton step on the two devices](assets/devices.png)
+
+*A Newton step of a search on the two devices, from Lasagna et al. (2026). The GPU holds every
+array of fields and does every operation on them; the CPU holds the period, the shift and the small
+matrices, and only numbers cross between the two.*
+
+## The files
+
+| file | what it holds |
+|---|---|
+| `ftfields.jl` | `FTFields`, a batch in Fourier space, with its wavenumbers and weights, `apply_symmetry!`, `dots` and `dot`, the methods of MultipleShooting on a batch, the passage from and to OKF |
+| `fields.jl` | `Fields`, a batch on the grid |
+| `operators.jl` | `ddx!`, `ddy!`, `laplacian!`, `invlaplacian!` on batches |
+| `fft.jl` | `InverseFFT!` and `ForwardFFT!`, between the two |
+| `implicit.jl` | `ImplicitTerm`, the viscous term, implicit, or exact by the coefficients of the exponential schemes |
+| `nonlinear.jl` | `ExplicitTerm`, advection and forcing |
+| `linearised.jl` | `TangentTerm`, the linearised advection, `ForcedTangentTerm`, and `AdjointTerm`, its transpose |
+| `dynamics/nonlinearpropagator.jl` | `NonlinearPropagator`, the flow, and `stages` |
+| `dynamics/tangentpropagator.jl` | `TangentPropagator`, the flow with its tangent, forced or not |
+| `dynamics/righthandside.jl` | `RightHandSide`, the time derivative of the fields |
+| `dynamics/xshift.jl` | `XShift`, the shift along `x` and its generator |
+| `dynamics/adjointpropagator.jl` | `AdjointPropagator`, the transpose of the tangent, back over the stages |
+| `dynamics/checks.jl`, `chunks.jl`, `flows.jl` | what they share: the checks of their arguments, the chunks of the tasks on the CPU, the flows of Flows.jl at another Reynolds number |
+| `BatchedKolmogorovFlow.jl` | the module, its exports and the order of the includes |
+| `kernels.jl` | the terms entry by entry, in three passes: what an entry is, and the loops of the CPU |
+| `ext/BatchedKolmogorovFlowCUDAExt.jl`, `ext/kernels.jl` | the extension that gives the arrays of the GPU, `CuArray`, once `using CUDA`, and the three kernels of the terms |
+
 ## Tests and examples
 
 ```
 julia --project=test test/runtests.jl
 DEVICE=gpu julia --project=test test/runtests.jl
-julia --project=examples examples/timing.jl cpu 10 1 4 16
-julia --project=<environment with CUDA> examples/timing.jl gpu 10 1 4 16 64 256 1024
+julia --project=examples examples/usage.jl
 ```
 
 The tests compare every function with OKF and Flows on a small grid (`n = 8`,
@@ -260,11 +440,21 @@ With `DEVICE=gpu` the batches are `CuArray`s. CUDA is a dependency neither of
 the package nor of the test environment: it is loaded from another environment
 of the load path, the global one by default.
 
-`examples/timing.jl` times the flow and the tangent of `B` fields
-over `τ = 10` at the resolution of the campaigns, `n = 33` and `m = 49`.
+`examples/usage.jl` holds the examples of use above, with their checks.
 `examples/orbits.jl` reads the orbits and the seeds of the campaigns into
 batches of seeds. A state that must fill several segments is advanced by whole
 steps of `dt`, and each shooting point takes the rest of a step on a copy. A
 shorter step that the integration went on from would leave the trajectory of
 the simulation about `1e-9` off, and the recurrence would be lost by
 `T ≈ 150`. An orbit that closes after a translation along `y` is refused.
+
+## References
+
+- C. Basdevant, *Technical improvements for direct numerical simulation of homogeneous
+  three-dimensional turbulence*, J. Comput. Phys. **50**, 209–214 (1983). The form of the
+  advection.
+- G. J. Chandler and R. R. Kerswell, *Invariant recurrent solutions embedded in a turbulent
+  two-dimensional Kolmogorov flow*, J. Fluid Mech. **722**, 554–595 (2013). Kolmogorov flow and
+  its recurrent solutions.
+- D. Lasagna, O. Ashtari, T. Burton and T. M. Schneider, *Multiple shooting search of long unstable
+  periodic orbits in turbulent flows*, in preparation (2026). The searches that the package serves.
