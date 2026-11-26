@@ -8,7 +8,7 @@ Two-dimensional Kolmogorov flow on batches of vorticity fields, in Julia. The pa
 vorticity equation, its tangent equation and the transpose of the tangent, with all the fields of
 a batch advanced together, on a GPU, on one core of a CPU or on several. A batch may hold the
 states of many flows, or the segments of one orbit with their perturbations: the objects of the
-package are those that [MultipleShooting.jl](https://github.com/gasagna/MultipleShooting.jl)
+package are those that [MultipleShooting.jl](https://github.com/Davide-Lasagna-s-Lab/MultipleShooting.jl)
 calls in its searches for periodic orbits.
 
 The package has four parts, and this page follows them.
@@ -52,7 +52,7 @@ NKRoots.jl are not registered. Clone them side by side and develop them in the e
 git clone https://github.com/Davide-Lasagna-s-Lab/Flows.jl
 git clone https://github.com/Davide-Lasagna-s-Lab/OpenKolmogorovFlow.jl
 git clone https://github.com/Davide-Lasagna-s-Lab/NKRoots.jl
-git clone https://github.com/gasagna/MultipleShooting.jl
+git clone https://github.com/Davide-Lasagna-s-Lab/MultipleShooting.jl
 git clone https://github.com/Davide-Lasagna-s-Lab/BatchedKolmogorovFlow.jl
 julia -e 'using Pkg; Pkg.develop([PackageSpec(path=p) for p in ("Flows.jl", "OpenKolmogorovFlow.jl",
           "NKRoots.jl", "MultipleShooting.jl", "BatchedKolmogorovFlow.jl")])'
@@ -125,6 +125,15 @@ S  = XShift()
 F(dX, X)                            # dX = dω/dt at every field
 S(X, 0.7)                           # ω(x, y) → ω(x + 0.7, y), in place
 S(dX, X, 1)                         # dX = ∂ω/∂x, the generator of the shift
+```
+
+An orbit may close after a translation along `y` by whole wavelengths `2π/kf` of the forcing, a
+discrete symmetry of the flow. Its shift translates too, by `sy` wavelengths fixed for the orbit,
+so that the parts of a search that shift the end of the last segment translate it.
+
+```julia
+S  = XShift(; sy=2, kf=kf)
+S(X, 0.7)                           # ω(x, y) → ω(x + 0.7, y + 2π sy/kf), in place
 ```
 
 **The adjoint.** The transpose of the tangent, back over the stages of the flow, which are kept
@@ -271,14 +280,16 @@ G  = NonlinearPropagator(n, m, Re, kf; B, dt=0.01, scheme=:CB3R2R3e,
 L  = TangentPropagator(n, m, Re, kf; B, k′=1, forced=false, dt=0.01,
                        scheme=:CB3R2R3e, device=:cpu, tasks=1, kernels=true)
 F  = RightHandSide(n, m, Re, kf; B, device=:cpu, kernels=true)
-S  = XShift()
+S  = XShift(; sy=0, kf=0)
 A  = AdjointPropagator(n, m, Re; B, scheme=:CB3R2R3e, device=:cpu)
 ```
 
 `scheme` is a key of `Flows.imex_schemes`: `:CNRK2`, `:CB3R2R2`, `:CB3R2R3e`,
 `:CB3R2R3c` or `:CB4R3R4`, or the exponential `:ETDRK2` or `:ETDRK4`, all with
 their stages and their discrete adjoint. `device`, `tasks` and `kernels` are
-those of the section above. `B` has no default, and `kf` is in `1:n`.
+those of the section above. `B` has no default, and `kf` is in `1:n`. `sy`, the
+translation along `y` of the shift in wavelengths of the forcing, needs `kf` of
+the propagators when it is not zero.
 
 Each object has one task, which it does when called, on batches of `B` fields,
 and holds the workspaces of that task, made with it, so that a call allocates
@@ -295,7 +306,7 @@ not depend on the Reynolds number.
 | `G(X, τ)` | advances every field of `X` in place by `τ`, in steps of `dt` and a last shorter step that ends on `τ` |
 | `L(X, V, τ)` | advances the fields `X` and the perturbations `V` together, `V` by the tangent equation, with the same scheme and steps: the derivative of the discrete flow. `V` is a batch like `X` when `k′ = 1`, or a vector of `k′` such batches, each about the fields of `X`, which are advanced once for all of them. With `forced = true` the tangent equation is forced by the derivative of the right-hand side in the Reynolds number, `-Δω/Re²` |
 | `F(dX, X)` | the time derivative of every field |
-| `S(X, s)` | `ω(x, y) → ω(x + s, y)` for every field, the coefficients times `cis(j s)`; any number of fields |
+| `S(X, s)` | `ω(x, y) → ω(x + s, y + 2π sy/kf)` for every field, the coefficients times `cis(j s + 2π k sy/kf)`; any number of fields |
 | `S(dX, X, 1)` | the generator of the shift, `∂ω/∂x` |
 | `stages(G, X, τ)` | the stages of every step of the flow over `τ` from the fields `X`, which are left as they are, kept for the adjoint |
 | `A(W, S)` | the transpose of the tangent applied to `W`, back over the stages `S` |
@@ -353,7 +364,8 @@ MultipleShooting.jl takes a callable for each part of a search: `Residual(G;
 S)`, `Jacobian(L, F, z; S, dS, dG)`, `Subspace(L, z; k′, S)`,
 `Preconditioner(L, F, z; k′, S, dS)`, `tangent_sensitivity(L, Lp, F, z; S, dS,
 dG)`, and `freesearch!` and `continuation!`. A relative periodic orbit has the
-shift `S` and its generator `dS`, both the `XShift()` of this package. The
+shift `S` and its generator `dS`, both the `XShift()` of this package, or
+`XShift(; sy, kf)` for an orbit that closes after a translation along `y`. The
 search below leaves the Reynolds number free, from the seeds `X`, a batch of
 `ns` fields, one per segment, the period `T` and the shift `s`.
 
