@@ -21,11 +21,12 @@ using HDF5
     read_orbit(path, n) -> (X, T, s, kind)
 
 The states of the orbit in `path`, as a batch of `N₀` fields, an `FTFields{n}`, in the lab
-frame, its period `T` and its shift `s` along `x`. `kind` is `:seeds` or `:orbit`. An orbit that
-closes after a translation along `y` is refused, since the propagator shifts along `x` alone.
+frame, its period `T` and its shift `s` along `x`. The modes of the file are truncated, or padded
+with zeros, to the wavenumbers up to `n`. `kind` is `:seeds` or `:orbit`. An orbit that closes
+after a translation along `y` is refused, since the propagator shifts along `x` alone.
 """
 function read_orbit(path::String, n::Int)
-    # ---- the column of a batch of the wavenumber ky ----
+    # ---- the column of a batch of the wavenumber ky, of the batch asked for ----
     col(ky) = mod(ky, 2n + 1) + 1
 
     h5open(path, "r") do f
@@ -38,8 +39,15 @@ function read_orbit(path::String, n::Int)
             X  = zeros(ComplexF64, n + 1, 2n + 1, N₀)
             for i in 1:N₀
                 raw = read(f["seed_$(i)_real"]) .+ im .* read(f["seed_$(i)_imag"])
-                for kx in 0:n, ky in -n:n
-                    X[kx + 1, col(ky), i] = raw[mod(ky, size(raw, 1)) + 1, kx + 1]
+
+                # the modes the file holds: kx up to its last column, |ky| up to the ones of its rows
+                # that do not alias; the others, if n is larger, are zero, and if it is smaller, left out
+                rows = size(raw, 1)
+                kxf  = size(raw, 2) - 1
+                kyf  = (rows - 1) ÷ 2
+
+                for kx in 0:min(n, kxf), ky in -min(n, kyf):min(n, kyf)
+                    X[kx + 1, col(ky), i] = raw[mod(ky, rows) + 1, kx + 1]
                 end
             end
             X[1, 1, :] .= 0
@@ -55,8 +63,11 @@ function read_orbit(path::String, n::Int)
             T  = Float64(read(A["period"]))
             c  = Float64(read(A["drift"]))
             X  = zeros(ComplexF64, n + 1, 2n + 1, Ns)
-            for l in 0:(Ns - 1), kx in 0:n, ky in -n:n
-                X[kx + 1, col(ky), l + 1] = a[kx + 1, col(ky), l + 1] * cis(-kx * c * (l * T / Ns))
+
+            # the file has the layout of a batch of its own n, nf: ky in FFT order of its 2nf + 1 columns
+            nf = size(a, 1) - 1
+            for l in 0:(Ns - 1), kx in 0:min(n, nf), ky in -min(n, nf):min(n, nf)
+                X[kx + 1, col(ky), l + 1] = a[kx + 1, mod(ky, 2nf + 1) + 1, l + 1] * cis(-kx * c * (l * T / Ns))
             end
             X[1, 1, :] .= 0
             return (X=FTFields(X), T=T, s=c*T, kind=:orbit)
