@@ -10,20 +10,24 @@
 #     and other_sy (the translation along y by whole wavelengths of the force);
 #   - an orbit of the campaigns: datasets real and imag, (n+1) × (2n+1) × Ns with kx
 #     along the first dimension and ky in FFT order, the layout of the batches, and
-#     the attributes period, drift and yshift.
+#     the attributes period, drift and the translation along y: other_sy, in wavelengths
+#     of the forcing, as kf_recurrences_tight.jl writes it, or else yshift, a length, which
+#     is -2π sy/kf in the orbits of ReSolver (with kf among the attributes when it is not
+#     zero) and +2π sy/kf in the guesses of kf_recurrences_tight.jl.
 #
 # In both cases the orbit closes as S(Φ_T(x₁), s) = x₁, with S the shift by s along
-# x, XShift()(x, s).
+# x and by sy wavelengths 2π/kf of the forcing along y, XShift(; sy, kf)(x, s), so that
+# ω(x, y, t + T) = ω(x - s, y - 2π sy/kf, t).
 
 using HDF5
 
 """
-    read_orbit(path, n) -> (X, T, s, kind)
+    read_orbit(path, n) -> (X, T, s, sy, kind)
 
 The states of the orbit in `path`, as a batch of `N₀` fields, an `FTFields{n}`, in the lab
-frame, its period `T` and its shift `s` along `x`. The modes of the file are truncated, or padded
-with zeros, to the wavenumbers up to `n`. `kind` is `:seeds` or `:orbit`. An orbit that closes
-after a translation along `y` is refused, since the propagator shifts along `x` alone.
+frame, its period `T`, its shift `s` along `x` and its translation `sy` along `y`, in
+wavelengths of the forcing, the keyword of [`XShift`](@ref). The modes of the file are truncated,
+or padded with zeros, to the wavenumbers up to `n`. `kind` is `:seeds` or `:orbit`.
 """
 function read_orbit(path::String, n::Int)
     # ---- the column of a batch of the wavenumber ky, of the batch asked for ----
@@ -33,8 +37,6 @@ function read_orbit(path::String, n::Int)
         A = HDF5.attributes(f)
         if haskey(f, "seed_1_real")
             # ---- seeds of NKSearch or of recurrences.jl ----
-            (haskey(A, "other_sy") && Int(read(A["other_sy"])) != 0) &&
-                error("the seeds of $(path) close after a translation along y")
             N₀ = count(k -> endswith(k, "_real"), keys(f))
             X  = zeros(ComplexF64, n + 1, 2n + 1, N₀)
             for i in 1:N₀
@@ -51,18 +53,24 @@ function read_orbit(path::String, n::Int)
                 end
             end
             X[1, 1, :] .= 0
-            T = Float64(read(A["d1"]))
-            s = rem(Float64(read(A["d2"])), 2π, RoundNearest)
-            return (X=FTFields(X), T=T, s=s, kind=:seeds)
+            T  = Float64(read(A["d1"]))
+            s  = rem(Float64(read(A["d2"])), 2π, RoundNearest)
+            sy = haskey(A, "other_sy") ? Int(read(A["other_sy"])) : 0
+            return (X=FTFields(X), T=T, s=s, sy=sy, kind=:seeds)
         else
             # ---- an orbit of the campaigns, its instants moved back to the lab frame by the drift ----
-            (haskey(A, "yshift") && Float64(read(A["yshift"])) != 0) &&
-                error("the orbit of $(path) closes after a translation along y")
             a  = read(f["real"]) .+ im .* read(f["imag"])
             Ns = size(a, 3)
             T  = Float64(read(A["period"]))
             c  = Float64(read(A["drift"]))
             X  = zeros(ComplexF64, n + 1, 2n + 1, Ns)
+
+            # the translation along y in wavelengths of the forcing: other_sy when the file has it,
+            # or else from the length yshift = -2π sy/kf of the orbits of ReSolver
+            ℓy = haskey(A, "yshift") ? Float64(read(A["yshift"])) : 0.0
+            sy = haskey(A, "other_sy") ? Int(read(A["other_sy"])) :
+                 ℓy == 0               ? 0 :
+                                         round(Int, -ℓy*read(A["kf"])/2π)
 
             # the file has the layout of a batch of its own n, nf: ky in FFT order of its 2nf + 1 columns
             nf = size(a, 1) - 1
@@ -70,7 +78,7 @@ function read_orbit(path::String, n::Int)
                 X[kx + 1, col(ky), l + 1] = a[kx + 1, mod(ky, 2nf + 1) + 1, l + 1] * cis(-kx * c * (l * T / Ns))
             end
             X[1, 1, :] .= 0
-            return (X=FTFields(X), T=T, s=c*T, kind=:orbit)
+            return (X=FTFields(X), T=T, s=c*T, sy=sy, kind=:orbit)
         end
     end
 end

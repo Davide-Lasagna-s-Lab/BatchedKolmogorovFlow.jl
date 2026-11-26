@@ -458,7 +458,8 @@ batches of seeds. A state that must fill several segments is advanced by whole
 steps of `dt`, and each shooting point takes the rest of a step on a copy. A
 shorter step that the integration went on from would leave the trajectory of
 the simulation about `1e-9` off, and the recurrence would be lost by
-`T ≈ 150`. An orbit that closes after a translation along `y` is refused.
+`T ≈ 150`. An orbit that closes after a translation along `y` comes with its
+`sy`, for `XShift(; sy, kf)`.
 
 ## References
 

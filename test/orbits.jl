@@ -104,3 +104,58 @@ using HDF5
         end
     end
 end
+
+@testset "read_orbit, the translation along y    " begin
+    mktempdir() do dir
+        # ---- a seed file with other_sy, an orbit file with the length yshift = -2π sy/kf of
+        #      ReSolver and kf, and a guess of kf_recurrences_tight.jl, for every translation ----
+        for sy in -1:2
+            seeds = joinpath(dir, "seeds$(sy).h5")
+            h5open(seeds, "w") do f
+                f["seed_1_real"] = zeros(18, 10)
+                f["seed_1_imag"] = zeros(18, 10)
+                A = HDF5.attributes(f)
+                A["d1"]       = 5.0
+                A["d2"]       = 0.1
+                A["other_sy"] = sy
+            end
+
+            orbit = joinpath(dir, "orbit$(sy).h5")
+            h5open(orbit, "w") do f
+                f["real"] = zeros(9, 17, 2)
+                f["imag"] = zeros(9, 17, 2)
+                A = HDF5.attributes(f)
+                A["period"] = 5.0
+                A["drift"]  = 0.1
+                A["yshift"] = -2π*sy/kf
+                A["kf"]     = kf
+            end
+
+            # ---- a guess of kf_recurrences_tight.jl: other_sy, and yshift = +2π sy/kf ----
+            tight = joinpath(dir, "tight$(sy).h5")
+            h5open(tight, "w") do f
+                f["real"] = zeros(9, 17, 2)
+                f["imag"] = zeros(9, 17, 2)
+                A = HDF5.attributes(f)
+                A["period"]   = 5.0
+                A["drift"]    = 0.1
+                A["yshift"]   = 2π*sy/kf
+                A["other_sy"] = sy
+            end
+
+            @test read_orbit(seeds, n).sy === sy
+            @test read_orbit(orbit, n).sy === sy
+            @test read_orbit(tight, n).sy === sy
+        end
+
+        # ---- a seed file with no other_sy closes after no translation ----
+        bare = joinpath(dir, "bare.h5")
+        h5open(bare, "w") do f
+            f["seed_1_real"] = zeros(18, 10)
+            f["seed_1_imag"] = zeros(18, 10)
+            HDF5.attributes(f)["d1"] = 5.0
+            HDF5.attributes(f)["d2"] = 0.1
+        end
+        @test read_orbit(bare, n).sy === 0
+    end
+end

@@ -77,3 +77,63 @@ end
     @test maximum(abs, products(B.V[1], B.V[2])) < 1e-12
     @test all(reldiff(KS.apply_symmetry!(copy(B.V[k₁])), B.V[k₁]) < 1e-14 for k₁ in 1:2)
 end
+
+@testset "a translation along y at the junction  " begin
+    Ωs = okf_fields(4)
+    Λs = okf_fields(4; seed=2, laminar=false)
+    D  = dynamics(4)
+    Dk = dynamics(4; k′=2)
+    z  = ShootingVector(batch(Ωs), [2.0, 0.3])
+    v  = ShootingVector(batch(Λs), [0.0, -0.2])
+    w  = ShootingVector(fill!(similar(z.X), 0), [1.0, 0.0])
+    F₀ = Residual(D.G; S=XShift())
+
+    for sy in (-1, 1, 2)
+        S = XShift(; sy=sy, kf=kf)
+        F = Residual(D.G; S=S)
+        J = Jacobian(D.L, D.F, z; S=S, dS=S)
+
+        # ---- the residual: the end of the last segment translated, in row 1 alone ----
+        #      r₁ = T(sy) S(s) φ_τ(u_m) - u₁,   S(s) φ_τ(u_m) = r₁⁰ + u₁ for sy = 0
+        r  = F(similar(z), z)
+        r₀ = F₀(similar(z), z)
+        u₁ = view(z.X, :, :, 1:1)
+        e₀ = plus(view(r₀.X, :, :, 1:1), 1, u₁)
+        @test cpu(r.X)[:, :, 2:4] == cpu(r₀.X)[:, :, 2:4]
+        @test reldiff(view(r.X, :, :, 1:1), plus(S(e₀, 0.0), -1, u₁)) < 1e-13
+        @test reldiff(view(r.X, :, :, 1:1), view(r₀.X, :, :, 1:1)) > 1e-2
+
+        # ---- the product with the Jacobian against the centred difference of the residual, as for
+        #      sy = 0 ----
+        difference(v, ε) = (F(similar(z), z .+ ε .* v) .- F(similar(z), z .- ε .* v)) ./ (2ε)
+        @test reldiff((J*v).X, difference(v, 1e-6).X) < 1e-7
+        @test reldiff((J*w).X, difference(w, 1e-6).X) < 1e-4
+
+        # ---- the coarse matrix of the preconditioner is Wᵀ J W, W the bases at the seeds with the
+        #      period and the shift: the subspace step translates the end of the last segment as the
+        #      Jacobian does ----
+        Random.seed!(3)
+        M   = Preconditioner(Dk.L, D.F, z; k′=2, S=S, dS=S, maxsteps=2, cap=:keep)
+        U   = M.S.U
+        WJW = Matrix{Float64}(undef, 10, 10)
+        for c in 1:10
+            # ---- column c of W, e: direction a of the basis at seed i, or the period, or the shift ----
+            e = ShootingVector(fill!(similar(z.X), 0), [0.0, 0.0])
+            if c <= 8
+                i = cld(c, 2)
+                a = c - 2(i - 1)
+                copyto!(view(e.X, :, :, i:i), view(U[a], :, :, i:i))
+            else
+                e.d[c - 8] = 1.0
+            end
+
+            # ---- its image by J in the bases at the seeds, and the phase rows ----
+            Je = J*e
+            for i in 1:4, a in 1:2
+                WJW[2(i - 1) + a, c] = products(U[a], Je.X)[i]
+            end
+            WJW[9:10, c] .= Je.d
+        end
+        @test maximum(abs, Matrix(M.E) .- WJW) < 1e-10*maximum(abs, WJW)
+    end
+end

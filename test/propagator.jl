@@ -390,6 +390,38 @@ end
     @test all(abs.(products(D, X)) .< 1e-14 .* products(X, X))
 end
 
+@testset "shift with a translation along y       " begin
+    Ωs = okf_fields(3)
+    X  = batch(Ωs)
+    P  = dynamics(3)
+    s  = 0.731
+
+    # ---- with sy = 0 the shift along x alone, to the bit, and sy ≠ 0 needs kf ----
+    @test XShift(XShift(; sy=1, kf=kf), 35.0) === XShift(; sy=1, kf=kf)
+    @test cpu(XShift(; sy=0, kf=kf)(copy(X), s)) == cpu(XShift()(copy(X), s))
+    @test_throws ArgumentError XShift(; sy=1)
+
+    for sy in -1:2
+        S  = XShift(; sy=sy, kf=kf)
+        Xs = S(copy(X), s)
+
+        # ---- the shift along x, then the translation by sy quarters of 2π along y: OKF's
+        #      shift!, which takes kf = 4 ----
+        for i in 1:3
+            @test coefficients(OKF.shift!(copy(Ωs[i]), s, sy)) ≈ cpu(Xs)[:, :, i] rtol=1e-14
+        end
+
+        # ---- a symmetry of the flow and of its right-hand side, an isometry, and kf of them none ----
+        @test reldiff(P.G(S(copy(X), s), 1.0), S(P.G(copy(X), 1.0), s)) < 1e-12
+        @test reldiff(P.F(similar(X), S(copy(X), s)), S(P.F(similar(X), X), s)) < 1e-13
+        @test products(Xs, Xs) ≈ products(X, X) rtol=1e-14
+        @test reldiff(XShift(; sy=kf*sy, kf=kf)(copy(X), 0.0), X) < 1e-13
+
+        # ---- the generator is that of the shift along x, at the translated fields ----
+        @test cpu(S(similar(X), Xs, 1)) == cpu(XShift()(similar(X), Xs, 1))
+    end
+end
+
 @testset "workspaces, made with the propagator   " begin
     X   = random_fields(256)
     V   = random_fields(256; seed=8)
