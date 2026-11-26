@@ -1,45 +1,73 @@
-# Draws assets/logo.svg, in the manner of the logos of the other packages: a batch of fields, four
-# tiles in the colours of Julia, the first with the bands of the flow, and Andrey Kolmogorov, who
-# gave the flow its name, in the glasses that the batches deserve.
+# Draws assets/logo.svg: a batch of fields as one array, a block of slabs one behind the other, as
+# in the figures of Lasagna et al. (2026), with a vorticity field of Kolmogorov flow, computed with
+# the package, on the face of the first.
 #
-#     julia assets/make_logo.jl
+#     julia --project=<an environment with the package and CairoMakie> assets/make_logo.jl
+using BatchedKolmogorovFlow
+using Base64
+using CairoMakie
 using Printf
+using Random
 
-const INK    = "#242936"
-const COLORS = ["#cb3c33", "#9558b2", "#389826", "#4063d8"]    # from the last tile to the first
-
-
-# ---- the batch: four tiles, each a little up and to the left of the one before it ----
-
-side  = 138.0
-first = (116.0, 108.0)
-back  = (-19.0, -15.0)
-
-tiles = [@sprintf("<rect x=\"%.1f\" y=\"%.1f\" width=\"%.1f\" height=\"%.1f\" rx=\"22\" fill=\"%s\"/>",
-                  first[1] + (4 - i)*back[1], first[2] + (4 - i)*back[2], side, side, COLORS[i])
-         for i in 1:4]
-
-# the bands of the flow on the first tile: three waves across it
-wave(y) = "M" * join([@sprintf("%.1f %.1f", first[1] + 16 + x, y + 8*sin(2π*x/53))
-                      for x in range(0, side - 32; length=60)], " L")
-bands = [@sprintf("<path d=\"%s\" fill=\"none\" stroke=\"#ffffff\" stroke-opacity=\"0.92\" stroke-width=\"10\" stroke-linecap=\"round\" stroke-linejoin=\"round\"/>",
-                  wave(first[2] + side*f)) for f in (0.25, 0.5, 0.75)]
+const KF = BatchedKolmogorovFlow
 
 
-# ---- the glasses: black pixels, and the glint of each lens ----
+# ---- the field: one of a batch of four, from smooth random ones, long after their start ----
 
-pixels = ["######################",
-          "..#oo#o####..#oo#o####",
-          "..##oo#o###..##oo#o###",
-          "...##oo#o#....##oo#o#.",
-          "....#####......#####.."]
-px     = 6.0
-corner = (322 - 12px, 120.0)    # the bridge over the nose
+n, m, Re, kf = 42, 63, 40.0, 4
 
-glasses = [@sprintf("<rect x=\"%.1f\" y=\"%.1f\" width=\"%.1f\" height=\"%.1f\" fill=\"%s\"/>",
-                    corner[1] + (c - 1)*px, corner[2] + (r - 1)*px, px + 0.4, px + 0.4,
-                    pixels[r][c] == '#' ? "#14161c" : "#ffffff")
-           for r in eachindex(pixels) for c in 1:length(pixels[r]) if pixels[r][c] != '.']
+Random.seed!(4)
+X  = randn!(FTFields(n, 4))
+X .= X ./ (1 .+ X.j.^2 .+ X.k.^2)
+G  = NonlinearPropagator(n, m, Re, kf; B=4)
+G(X, 174.0)
+
+# the vorticity of the second field on the grid, as a picture with no margin, for the svg
+ω   = Array(parent(KF.InverseFFT!(X, m)(KF.Fields(X, m), copy(X))))[:, :, 2]
+fig = Figure(size=(600, 600), figure_padding=0)
+ax  = Axis(fig[1, 1])
+hidedecorations!(ax)
+hidespines!(ax)
+heatmap!(ax, ω; colormap=Reverse(:RdBu), colorrange=(-6, 6), interpolate=true)
+file = tempname() * ".png"
+save(file, fig; px_per_unit=1)
+picture = base64encode(read(file))
+
+
+# ---- the block: six fields, the first seen from the front, the others from above and from the
+#      side, in the blue of the figures ----
+
+const BLUE = (0x19, 0x76, 0xd2)
+
+hex(c)        = @sprintf("#%02x%02x%02x", round.(Int, c)...)
+tint(p)       = hex(BLUE .* (p/100) .+ 255 .* (1 - p/100))     # p percent of the blue, on white
+const EDGE    = hex(BLUE .* 0.8)                                # the blue, darker, of the edges
+points(ps...) = join([@sprintf("%.1f,%.1f", p...) for p in ps], " ")
+
+fields = 6
+O = (78.0, 224.0)       # the lower left corner of the first field
+W = (150.0, 38.0)       # its lower edge
+H = (0.0, -142.0)       # its left edge
+D = (11.0, -6.8)        # from a field to the one behind it
+
+at(a, b, c) = O .+ a .* W .+ b .* H .+ c .* D
+
+face(colour, ps...) = @sprintf("<polygon points=\"%s\" fill=\"%s\" stroke=\"%s\" stroke-width=\"1.8\" stroke-linejoin=\"round\"/>",
+                               points(ps...), colour, EDGE)
+
+block = String[]
+for i in fields:-1:1
+    # the top and the side of field i, darker from the first to the last
+    push!(block, face(tint(14 + 7*(i - 1)), at(0, 1, i - 1), at(1, 1, i - 1), at(1, 1, i), at(0, 1, i)))
+    push!(block, face(tint(36 + 7*(i - 1)), at(1, 0, i - 1), at(1, 0, i), at(1, 1, i), at(1, 1, i - 1)))
+end
+
+# the field on the face of the first: the picture, sheared onto the face, and its edge
+tl    = at(0, 1, 0)
+image = @sprintf("<image href=\"data:image/png;base64,%s\" x=\"0\" y=\"0\" width=\"100\" height=\"100\" preserveAspectRatio=\"none\" transform=\"matrix(%.4f %.4f %.4f %.4f %.1f %.1f)\"/>",
+                 picture, W[1]/100, W[2]/100, -H[1]/100, -H[2]/100, tl...)
+edge  = @sprintf("<polygon points=\"%s\" fill=\"none\" stroke=\"%s\" stroke-width=\"2.2\" stroke-linejoin=\"round\"/>",
+                 points(at(0, 0, 0), at(1, 0, 0), at(1, 1, 0), at(0, 1, 0)), EDGE)
 
 
 # ---- the svg ----
@@ -47,7 +75,7 @@ glasses = [@sprintf("<rect x=\"%.1f\" y=\"%.1f\" width=\"%.1f\" height=\"%.1f\" 
 svg = """
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1080 300" role="img" aria-labelledby="title desc">
   <title id="title">BatchedKolmogorovFlow.jl logo</title>
-  <desc id="desc">A batch of four tiles in the colours of Julia, the first with the bands of Kolmogorov flow, and Andrey Kolmogorov in pixel sunglasses, beside the BatchedKolmogorovFlow.jl wordmark.</desc>
+  <desc id="desc">A batch of fields drawn as one array, a block of slabs one behind the other, with a vorticity field of Kolmogorov flow on its front face, beside the BatchedKolmogorovFlow.jl wordmark.</desc>
   <defs>
     <linearGradient id="bg" x1="0" x2="1" y1="0" y2="1">
       <stop offset="0" stop-color="#ffffff"/>
@@ -57,50 +85,31 @@ svg = """
       <feDropShadow dx="0" dy="9" stdDeviation="11" flood-color="#172033" flood-opacity="0.14"/>
     </filter>
     <filter id="soft" x="-30%" y="-30%" width="160%" height="160%">
-      <feDropShadow dx="0" dy="3" stdDeviation="3" flood-color="#172033" flood-opacity="0.16"/>
+      <feDropShadow dx="0" dy="4" stdDeviation="5" flood-color="#172033" flood-opacity="0.18"/>
     </filter>
-    <clipPath id="panel">
-      <rect x="24" y="24" width="1032" height="252" rx="24"/>
-    </clipPath>
   </defs>
 
   <!-- Main panel -->
   <rect x="24" y="24" width="1032" height="252" rx="24" fill="url(#bg)" filter="url(#panel-shadow)"/>
 
-  <g clip-path="url(#panel)">
-    <!-- The batch -->
-    <g filter="url(#soft)">
-      $(join(tiles, "\n      "))
-    </g>
-    $(join(bands, "\n    "))
-
-    <!-- Kolmogorov -->
-    <g filter="url(#soft)" stroke-linejoin="round" stroke-linecap="round">
-      <path d="M236 300 Q240 226 294 210 L350 210 Q404 226 408 300 Z" fill="$INK"/>
-      <path d="M300 208 L322 244 L344 208 Z" fill="#ffffff"/>
-      <path d="M314 216 L330 216 L327 230 L334 300 L310 300 L317 230 Z" fill="#cb3c33"/>
-      <rect x="306" y="186" width="32" height="26" fill="#e2b48f"/>
-      <ellipse cx="270" cy="150" rx="9" ry="14" fill="#f3cda6" stroke="$INK" stroke-width="5"/>
-      <ellipse cx="374" cy="150" rx="9" ry="14" fill="#f3cda6" stroke="$INK" stroke-width="5"/>
-      <ellipse cx="322" cy="142" rx="50" ry="58" fill="#f3cda6" stroke="$INK" stroke-width="5"/>
-      <path d="M270 146 Q254 96 286 74 Q322 52 358 72 Q392 94 374 146 Q372 122 360 112 Q340 126 322 104 Q306 124 284 112 Q272 122 270 146 Z" fill="#f6f7f9" stroke="$INK" stroke-width="5"/>
-      <path d="M322 152 Q313 171 324 173" fill="none" stroke="$INK" stroke-width="4"/>
-      <path d="M303 186 Q322 196 343 181" fill="none" stroke="$INK" stroke-width="5"/>
-    </g>
-    $(join(glasses, "\n    "))
+  <!-- The batch: the block of fields, and the field on its face -->
+  <g filter="url(#soft)">
+    $(join(block, "\n    "))
+    $image
+    $edge
   </g>
 
   <!-- Wordmark and subtitle -->
-  <g transform="translate(452 100)">
-    <text x="0" y="46" font-family="Inter, Avenir, Helvetica, Arial, sans-serif"
-          font-size="42" font-weight="820" fill="#222734" letter-spacing="0">BatchedKolmogorovFlow.jl</text>
-    <text x="2" y="86" font-family="Inter, Avenir, Helvetica, Arial, sans-serif"
+  <g transform="translate(372 100)">
+    <text x="0" y="48" font-family="Inter, Avenir, Helvetica, Arial, sans-serif"
+          font-size="46" font-weight="820" fill="#222734" letter-spacing="0">BatchedKolmogorovFlow.jl</text>
+    <text x="2" y="90" font-family="Inter, Avenir, Helvetica, Arial, sans-serif"
           font-size="21" font-weight="700" fill="#4f596b" letter-spacing="0">Kolmogorov flow on batches of fields, its tangent</text>
-    <text x="2" y="114" font-family="Inter, Avenir, Helvetica, Arial, sans-serif"
+    <text x="2" y="118" font-family="Inter, Avenir, Helvetica, Arial, sans-serif"
           font-size="21" font-weight="700" fill="#4f596b" letter-spacing="0">and its adjoint, on a GPU or on a CPU.</text>
   </g>
 </svg>
 """
 
 write(joinpath(@__DIR__, "logo.svg"), svg)
-println("written assets/logo.svg")
+println("written assets/logo.svg, ", round(Int, sizeof(svg)/1000), " kB")
