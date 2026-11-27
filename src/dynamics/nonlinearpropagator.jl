@@ -22,6 +22,12 @@ coefficients of `B` fields, on the CPU or on the GPU. Field by field the results
 OpenKolmogorovFlow with the same scheme and steps, to rounding. [`stages`](@ref) keeps the stages
 of the steps, for an [`AdjointPropagator`](@ref).
 
+`τ` may be a vector of times, one per field, the segments of unequal lengths of
+MultipleShooting.jl: all the fields are advanced over the shortest time, then all of them over
+the gap to each longer time in turn, the fields whose time has ended put back as they were. A
+field thus takes whole steps alone when the times are whole steps. Segments of q or q + 1 steps
+cost one step of the batch more.
+
 The propagator holds the workspaces of batches of `B` fields, made with it, so that a call
 allocates no batch. A batch of another number of fields is an error. The second form is the
 propagator `G` at another Reynolds number, which shares its workspaces and costs nothing. Two
@@ -134,6 +140,39 @@ function (G::NonlinearPropagator)(X::FTFields, τ::Real)
         # ---- advanced, and back ----
         chunk.ϕ(chunk.X, (0, τ))
         copyto!(Xc, parent(chunk.X))
+    end
+
+    return X
+end
+
+# The fields advanced each over its own time, τ[i] for field i, the segments of unequal lengths of
+# MultipleShooting.jl: all the fields over the shortest time, then all of them over the gap to each
+# longer time in turn, the fields whose time has ended put back as they were. A field thus takes
+# the steps of one call over its own time, cut at each shorter time of the batch, and whole steps
+# alone when the times are whole steps. Segments of q or q + 1 steps have one gap, one step of the
+# whole batch, a fraction 1/q more of integration. Equal times are one call, that of one time.
+function (G::NonlinearPropagator)(X::FTFields, τ::AbstractVector)
+    B = size(X, 3)
+
+    # ---- input checks ----
+    length(τ) == B ||
+        throw(ArgumentError("one time per field is needed, got $(length(τ)) for $(B)"))
+
+    # ---- the times of the batch, from the shortest ----
+    times = sort(unique(τ))
+
+    # ---- all the fields over the shortest ----
+    G(X, first(times))
+
+    for k in 2:length(times)
+        # ---- whether the time of each field has ended, on the device of the fields ----
+        over  = Vector{Bool}(τ .< times[k])
+        ended = copyto!(similar(parent(X), Bool, (1, 1, B)), reshape(over, 1, 1, B))
+
+        # ---- all of them over the gap, those that have ended put back ----
+        X₀ = copy(X)
+        G(X, times[k] - times[k - 1])
+        parent(X) .= ifelse.(ended, parent(X₀), parent(X))
     end
 
     return X

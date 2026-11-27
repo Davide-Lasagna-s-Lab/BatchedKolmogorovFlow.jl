@@ -422,6 +422,54 @@ end
     end
 end
 
+@testset "a vector of times, one per field       " begin
+    Ωs = okf_fields(4)
+    Λs = okf_fields(4; seed=2, laminar=false)
+    X  = batch(Ωs)
+    V  = batch(Λs)
+    D  = dynamics(4)
+    Dk = dynamics(4; k′=2)
+    τ  = [127, 128, 127, 128] .* dt       # whole steps, q or q + 1
+    a  = [1, 3]                           # the fields of the shorter time
+    b  = [2, 4]                           # those of the longer
+
+    # ---- equal times are the call for one time, to the bit ----
+    @test cpu(D.G(copy(X), fill(1.27, 4))) == cpu(D.G(copy(X), 1.27))
+    W = copy(V)
+    D.L(copy(X), W, fill(1.27, 4))
+    @test cpu(W) == cpu(D.L(copy(X), copy(V), 1.27))
+
+    # ---- a field of the shorter time is advanced over it, one of the longer over the shorter and then
+    #      the gap, to the bit, and over its own time in one call to rounding, the steps being whole ----
+    Y  = D.G(copy(X), τ)
+    Ya = D.G(copy(X), τ[1])
+    Yb = D.G(D.G(copy(X), τ[1]), τ[2] - τ[1])
+    @test cpu(Y)[:, :, a] == cpu(Ya)[:, :, a]
+    @test cpu(Y)[:, :, b] == cpu(Yb)[:, :, b]
+    @test reldiff(cpu(Y)[:, :, b], cpu(D.G(copy(X), τ[2]))[:, :, b]) < 1e-13
+
+    # ---- the tangent takes the steps of the fields, one perturbation and k′ of every field ----
+    Xt = copy(X)
+    Vt = D.L(Xt, copy(V), τ)
+    @test reldiff(Xt, Y) < 1e-14
+    Va = D.L(copy(X), copy(V), τ[1])
+    Xb = copy(X)
+    Wb = copy(V)
+    D.L(Xb, Wb, τ[1])
+    D.L(Xb, Wb, τ[2] - τ[1])
+    @test cpu(Vt)[:, :, a] == cpu(Va)[:, :, a]
+    @test cpu(Vt)[:, :, b] == cpu(Wb)[:, :, b]
+    Xk = copy(X)
+    Uk = Dk.L(Xk, [copy(V), dev(FTFields(2 .* cpu(V)))], τ)
+    @test reldiff(Xk, Y) < 1e-14
+    @test reldiff(Uk[1], Vt) < 1e-14
+    @test reldiff(cpu(Uk[2]), 2 .* cpu(Vt)) < 1e-14
+
+    # ---- one time per field ----
+    @test_throws ArgumentError D.G(copy(X), τ[1:3])
+    @test_throws ArgumentError D.L(copy(X), copy(V), τ[1:3])
+end
+
 @testset "workspaces, made with the propagator   " begin
     X   = random_fields(256)
     V   = random_fields(256; seed=8)

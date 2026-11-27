@@ -22,6 +22,8 @@ subspace step. Every field goes with its `k′` perturbations in one batch, and 
 all of them, so that the `k′` directions cost one integration of the equation and `k′` of its
 tangent. Batch by batch the result is that of the propagator of one batch, to rounding. The
 fields and the perturbations are first given the symmetry of fields, and may be views of batches.
+`τ` may be a vector of times, one per field, the segments of unequal lengths, cut as the
+[`NonlinearPropagator`](@ref) cuts them, so that the perturbations take the steps of their fields.
 
 With `forced = true` the tangent equation is forced by the derivative of the right-hand side in the
 Reynolds number, `-Δω/Re²`, the forced tangent `Lp` of MultipleShooting.jl: from `V = 0` it gives
@@ -106,9 +108,11 @@ struct TangentPropagator{K}
                [(c..., ϕ = _reynolds(c.ϕ, Re)) for c in L.chunks])
 end
 
-(L::TangentPropagator)(X::FTFields, V::FTFields, τ::Real) = (_advance!(L, X, (V,), τ); V)
+(L::TangentPropagator)(X::FTFields, V::FTFields, τ::Union{Real, AbstractVector}) =
+    (_advance!(L, X, (V,), τ); V)
 
-(L::TangentPropagator)(X::FTFields, V::AbstractVector{<:FTFields}, τ::Real) = _advance!(L, X, V, τ)
+(L::TangentPropagator)(X::FTFields, V::AbstractVector{<:FTFields}, τ::Union{Real, AbstractVector}) =
+    _advance!(L, X, V, τ)
 
 # the fields X advanced by τ, and the perturbations V with them, k′ batches of as many as the
 # fields, a vector or a tuple, by the tangent equation, forced or not
@@ -133,6 +137,42 @@ function _advance!(L::TangentPropagator, X::FTFields, V, τ::Real)
         # ---- advanced together, the fields once, and back ----
         chunk.ϕ(chunk.Z, (0, τ))
         _unbundle!(X, V, chunk.Z, chunk.fields)
+    end
+
+    return V
+end
+
+# the fields X advanced each over its own time, τ[i] for field i, and the perturbations V with them,
+# as the NonlinearPropagator does with a vector of times: all over the shortest time, then all over
+# each gap to a longer one, the fields whose time has ended put back with their perturbations, so
+# that the tangent takes the steps of the flow
+function _advance!(L::TangentPropagator, X::FTFields, V, τ::AbstractVector)
+    B = size(X, 3)
+
+    # ---- input checks ----
+    length(τ) == B ||
+        throw(ArgumentError("one time per field is needed, got $(length(τ)) for $(B)"))
+
+    # ---- the times of the batch, from the shortest ----
+    times = sort(unique(τ))
+
+    # ---- all the fields with their perturbations over the shortest ----
+    _advance!(L, X, V, first(times))
+
+    for k in 2:length(times)
+        # ---- whether the time of each field has ended, on the device of the fields ----
+        over  = Vector{Bool}(τ .< times[k])
+        ended = copyto!(similar(parent(X), Bool, (1, 1, B)), reshape(over, 1, 1, B))
+
+        # ---- all of them over the gap, those that have ended put back, each perturbation with
+        #      its field ----
+        X₀ = copy(X)
+        V₀ = map(copy, V)
+        _advance!(L, X, V, times[k] - times[k - 1])
+        parent(X) .= ifelse.(ended, parent(X₀), parent(X))
+        for (v, v₀) in zip(V, V₀)
+            parent(v) .= ifelse.(ended, parent(v₀), parent(v))
+        end
     end
 
     return V

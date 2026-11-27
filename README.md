@@ -39,6 +39,7 @@ keyword `scheme`.
 [Interface](#interface) ·
 [The adjoint](#the-adjoint) ·
 [With MultipleShooting](#with-multipleshooting) ·
+[The distance of two states](#the-distance-of-two-states) ·
 [The files](#the-files) ·
 [Tests and examples](#tests-and-examples) ·
 [References](#references)
@@ -407,6 +408,31 @@ all use it. The segments have equal lengths.
 array of fields and does every operation on them; the CPU holds the period, the shift and the small
 matrices, and only numbers cross between the two.*
 
+## The distance of two states
+
+The searches of near recurrences compare a state `a` with a later state `b` up to the symmetries of
+the flow: the shift `σ` along `x` and the translations `sy` along `y` by whole wavelengths of the
+forcing, those of `XShift`,
+
+    d = min over σ and sy of ‖S(σ, sy) b - a‖ / ‖a‖,   S(σ, sy) ω(x, y) = ω(x + σ, y + 2π sy/kf).
+
+Since the shift is an isometry, `‖S b - a‖² = ‖a‖² + ‖b‖² - 2 f(σ, sy)`, with `f` a trigonometric
+polynomial in `σ` for each `sy`, whose coefficients are sums of `conj(a) b` over the classes of the
+wavenumber `k` along `y` modulo `kf`. One inverse FFT of length 256 gives `f` at 256 shifts, and
+Newton's method refines the largest, one pass over the coefficients in all.
+
+```julia
+D = Distance(n, kf)                 # translations sy = -1:2 for kf = 4; sy=0:0 for x alone
+d, σ, sy = D(a, b)                  # a, b: one field each, on the CPU
+XShift(; sy=sy, kf=kf)(b, σ)        # the state of the orbit of b closest to a, at d ‖a‖ from it
+M = moduli(a)                       # √w |a|, invariant, ‖M‖ = ‖a‖
+norm(moduli(b) - M) <= d*norm(M)    # a bound from below, with no search
+```
+
+`σ` lies in (-π, π] and `sy` among the translations given, so that `u(t + T)(x, y) = u(t)(x - σ,
+y - 2π sy/kf)` to within `d`, the convention `d2` and `other_sy` of the seeds of the campaigns. The
+object holds its work arrays and its plan, and serves one task at a time.
+
 ## The files
 
 | file | what it holds |
@@ -423,6 +449,7 @@ matrices, and only numbers cross between the two.*
 | `dynamics/righthandside.jl` | `RightHandSide`, the time derivative of the fields |
 | `dynamics/xshift.jl` | `XShift`, the shift along `x` and its generator |
 | `dynamics/adjointpropagator.jl` | `AdjointPropagator`, the transpose of the tangent, back over the stages |
+| `distance.jl` | `Distance`, the distance of two states up to the shift and the translations, and `moduli`, its bound from below |
 | `dynamics/checks.jl`, `chunks.jl`, `flows.jl` | what they share: the checks of their arguments, the chunks of the tasks on the CPU, the flows of Flows.jl at another Reynolds number |
 | `BatchedKolmogorovFlow.jl` | the module, its exports and the order of the includes |
 | `kernels.jl` | the terms entry by entry, in three passes: what an entry is, and the loops of the CPU |

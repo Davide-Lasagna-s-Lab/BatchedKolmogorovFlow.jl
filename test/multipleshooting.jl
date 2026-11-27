@@ -137,3 +137,69 @@ end
         @test maximum(abs, Matrix(M.E) .- WJW) < 1e-10*maximum(abs, WJW)
     end
 end
+
+@testset "segments of whole steps, unequal       " begin
+    Ωs = okf_fields(4)
+    Λs = okf_fields(4; seed=2, laminar=false)
+    D  = dynamics(4)
+    Dk = dynamics(4; k′=2)
+    T  = 5.10
+    τ  = [127, 128, 127, 128] .* dt       # whole steps, q or q + 1, adding up to T
+    w  = τ ./ T                           # their fractions of the period
+
+    for sy in (0, -1)
+        S = XShift(; sy=sy, kf=kf)
+        F = Residual(D.G; S=S)
+
+        # ---- the unknowns, and directions with their fractions, from similar ----
+        z = ShootingVector(batch(Ωs), [T, 0.3]; w=w)
+        v = similar(z)
+        e = similar(z)
+        copyto!(v.X, batch(Λs))
+        fill!(e.X, 0)
+        v.d .= [0.0, -0.2]
+        e.d .= [1.0, 0.0]
+        J = Jacobian(D.L, D.F, z; S=S, dS=S)
+
+        # ---- the residual: every segment over its own time, the junctions by rounding of the cut ----
+        r = F(similar(z), z)
+        for i in 1:3
+            φ = D.G(copy(z.X), MultipleShooting.times(z)[i])
+            @test reldiff(cpu(r.X)[:, :, i + 1] .+ cpu(z.X)[:, :, i + 1], cpu(φ)[:, :, i]) < 1e-13
+        end
+
+        # ---- the product with the Jacobian against the centred difference of the residual: the period
+        #      column scaled by the fraction of each segment, not by 1/m ----
+        difference(v, ε) = (F(similar(z), z .+ ε .* v) .- F(similar(z), z .- ε .* v)) ./ (2ε)
+        @test reldiff((J*v).X, difference(v, 1e-6).X) < 1e-7
+        @test reldiff((J*e).X, difference(e, 1e-6).X) < 1e-4
+
+        # ---- the coarse matrix of the preconditioner is Wᵀ J W, W the bases at the seeds with the
+        #      period and the shift ----
+        Random.seed!(3)
+        M   = Preconditioner(Dk.L, D.F, z; k′=2, S=S, dS=S, maxsteps=2, cap=:keep)
+        U   = M.S.U
+        WJW = Matrix{Float64}(undef, 10, 10)
+        for c in 1:10
+            # ---- column c of W, u: direction a of the basis at seed i, or the period, or the shift ----
+            u = similar(z)
+            fill!(u.X, 0)
+            u.d .= 0
+            if c <= 8
+                i = cld(c, 2)
+                a = c - 2(i - 1)
+                copyto!(view(u.X, :, :, i:i), view(U[a], :, :, i:i))
+            else
+                u.d[c - 8] = 1.0
+            end
+
+            # ---- its image by J in the bases at the seeds, and the phase rows ----
+            Ju = J*u
+            for i in 1:4, a in 1:2
+                WJW[2(i - 1) + a, c] = products(U[a], Ju.X)[i]
+            end
+            WJW[9:10, c] .= Ju.d
+        end
+        @test maximum(abs, Matrix(M.E) .- WJW) < 1e-10*maximum(abs, WJW)
+    end
+end

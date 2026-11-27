@@ -159,3 +159,59 @@ end
         @test read_orbit(bare, n).sy === 0
     end
 end
+
+@testset "read_orbit, a guess on the integrator's steps" begin
+    mktempdir() do dir
+        # ---- the states of a guess at nf = 10, ky in FFT order of 2nf + 1, every 50 steps of N = 120 and the end ----
+        Random.seed!(12)
+        nf      = 10
+        indices = [0, 50, 100, 120]
+        a       = zeros(ComplexF64, nf + 1, 2nf + 1, 4)
+        for l in 1:4, kx in 0:nf, ky in -nf:nf
+            a[kx + 1, mod(ky, 2nf + 1) + 1, l] = randn(ComplexF64)
+        end
+
+        # ---- a file with every attribute, a file with the core ones alone, and a group of a pack ----
+        full = joinpath(dir, "full.h5")
+        core = joinpath(dir, "core.h5")
+        pack = joinpath(dir, "pack.h5")
+        for (path, all) in ((full, true), (core, false), (pack, true))
+            h5open(path, "w") do f
+                g = path == pack ? create_group(f, "b20-r001-0001") : f
+                g["states_real"] = real.(a)
+                g["states_imag"] = imag.(a)
+                A = HDF5.attributes(g)
+                A["d1"]            = 1.2
+                A["d2"]            = 0.4
+                A["other_sy"]      = -1
+                A["other_indices"] = indices
+                if all
+                    A["other_steps"]    = 120
+                    A["other_dt"]       = 0.01
+                    A["other_distance"] = 0.07
+                end
+            end
+        end
+
+        R = read_orbit(full, n)
+        C = read_orbit(core, n)
+        Q = read_orbit(pack * ":b20-r001-0001", n)
+
+        # ---- the attributes, given or derived: N the last index, dt = d1/N ----
+        @test (R.kind, R.T, R.s, R.sy, R.steps, R.dt, R.indices, R.distance) ==
+              (:steps, 1.2, 0.4, -1, 120, 0.01, indices, 0.07)
+        @test (C.steps, C.indices) == (120, indices)
+        @test C.dt ≈ 0.01 rtol=1e-15
+        @test isnan(C.distance)
+        @test cpu(Q.X) == cpu(R.X) && Q.distance == 0.07
+
+        # ---- the modes of the file up to n, at the resolution of the tests, with no mean ----
+        E = zeros(ComplexF64, n + 1, 2n + 1, 4)
+        for l in 1:4, kx in 0:n, ky in -n:n
+            E[kx + 1, mod(ky, 2n + 1) + 1, l] = a[kx + 1, mod(ky, 2nf + 1) + 1, l]
+        end
+        E[1, 1, :] .= 0
+        @test cpu(R.X) == E
+        @test cpu(C.X) == E
+    end
+end

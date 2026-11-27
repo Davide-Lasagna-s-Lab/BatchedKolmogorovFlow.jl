@@ -3,7 +3,7 @@
 # ReSolver.jl/examples/kolmogorov/upo/shooting does. Included by the scripts of
 # this folder.
 #
-# Two formats:
+# Three formats:
 #   - a seed file of NKSearch or of recurrences.jl: datasets seed_i_real and
 #     seed_i_imag, the raw coefficients of OKF (ky in FFT order down the rows, kx ≥ 0
 #     across the columns), and the attributes d1 (period), d2 (shift of NKSearch)
@@ -13,27 +13,44 @@
 #     the attributes period, drift and the translation along y: other_sy, in wavelengths
 #     of the forcing, as kf_recurrences_tight.jl writes it, or else yshift, a length, which
 #     is -2π sy/kf in the orbits of ReSolver (with kf among the attributes when it is not
-#     zero) and +2π sy/kf in the guesses of kf_recurrences_tight.jl.
+#     zero) and +2π sy/kf in the guesses of kf_recurrences_tight.jl;
+#   - a guess on the steps of the integrator (kf_recurrences_tight.jl of 26 Nov and the
+#     databases after it), states of the simulation at its own time steps: datasets
+#     states_real and states_imag, (n+1) × (2n+1) × Ns in the layout of the batches, and the
+#     attributes d1 (the period, N steps of dt), d2, other_sy and other_indices (the step of
+#     every state from the start), with other_steps (N), other_dt (dt) and other_distance
+#     when the file has them: N is otherwise the last index, the end being stored, and dt is
+#     d1/N.
 #
-# In both cases the orbit closes as S(Φ_T(x₁), s) = x₁, with S the shift by s along
+# In all cases the orbit closes as S(Φ_T(x₁), s) = x₁, with S the shift by s along
 # x and by sy wavelengths 2π/kf of the forcing along y, XShift(; sy, kf)(x, s), so that
 # ω(x, y, t + T) = ω(x - s, y - 2π sy/kf, t).
 
 using HDF5
 
 """
-    read_orbit(path, n) -> (X, T, s, sy, kind)
+    read_orbit(path, n) -> (X, T, s, sy, kind, ...)
 
 The states of the orbit in `path`, as a batch of `N₀` fields, an `FTFields{n}`, in the lab
 frame, its period `T`, its shift `s` along `x` and its translation `sy` along `y`, in
 wavelengths of the forcing, the keyword of [`XShift`](@ref). The modes of the file are truncated,
-or padded with zeros, to the wavenumbers up to `n`. `kind` is `:seeds` or `:orbit`.
+or padded with zeros, to the wavenumbers up to `n`. `kind` is `:seeds`, `:orbit` or `:steps`. A
+guess of `kind = :steps` also gives `dt`, the time step of the simulation, `steps`, the N steps of
+the recurrence, `indices`, the step of every state from the start, and `distance`, the closing
+defect over the norm of the first state, NaN when the file does not give it. A guess left in the
+pack of its run is read as `"<pack>.h5:<id>"`, the path that kf_recurrences_lists.jl gives it.
 """
 function read_orbit(path::String, n::Int)
     # ---- the column of a batch of the wavenumber ky, of the batch asked for ----
     col(ky) = mod(ky, 2n + 1) + 1
 
-    h5open(path, "r") do f
+    # ---- the file, and the group of a guess left in a pack, "<pack>.h5:<id>" ----
+    parts = split(path, ".h5:")
+    file  = length(parts) == 2 ? parts[1] * ".h5" : path
+    group = length(parts) == 2 ? String(parts[2]) : ""
+
+    h5open(file, "r") do io
+        f = isempty(group) ? io : io[group]
         A = HDF5.attributes(f)
         if haskey(f, "seed_1_real")
             # ---- seeds of NKSearch or of recurrences.jl ----
@@ -57,6 +74,32 @@ function read_orbit(path::String, n::Int)
             s  = rem(Float64(read(A["d2"])), 2π, RoundNearest)
             sy = haskey(A, "other_sy") ? Int(read(A["other_sy"])) : 0
             return (X=FTFields(X), T=T, s=s, sy=sy, kind=:seeds)
+        elseif haskey(f, "states_real")
+            # ---- a guess on the steps of the integrator, the states of the simulation itself ----
+            a = read(f["states_real"]) .+ im .* read(f["states_imag"])
+            X = zeros(ComplexF64, n + 1, 2n + 1, size(a, 3))
+
+            # the file has the layout of a batch of its own n, nf: its modes up to n, or zeros beyond nf
+            nf = size(a, 1) - 1
+            for l in 1:size(a, 3), kx in 0:min(n, nf), ky in -min(n, nf):min(n, nf)
+                X[kx + 1, col(ky), l] = a[kx + 1, mod(ky, 2nf + 1) + 1, l]
+            end
+            X[1, 1, :] .= 0
+
+            # the steps of the recurrence, the last index unless given, and the time step, d1/N unless
+            # given; the distance, NaN when the file does not give it
+            T       = Float64(read(A["d1"]))
+            indices = Int.(read(A["other_indices"]))
+            N       = haskey(A, "other_steps") ? Int(read(A["other_steps"])) : last(indices)
+            return (X        = FTFields(X),
+                    T        = T,
+                    s        = rem(Float64(read(A["d2"])), 2π, RoundNearest),
+                    sy       = Int(read(A["other_sy"])),
+                    kind     = :steps,
+                    dt       = haskey(A, "other_dt") ? Float64(read(A["other_dt"])) : T/N,
+                    steps    = N,
+                    indices  = indices,
+                    distance = haskey(A, "other_distance") ? Float64(read(A["other_distance"])) : NaN)
         else
             # ---- an orbit of the campaigns, its instants moved back to the lab frame by the drift ----
             a  = read(f["real"]) .+ im .* read(f["imag"])
